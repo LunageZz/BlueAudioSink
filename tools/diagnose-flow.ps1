@@ -5,14 +5,33 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+
+# 统一控制台编码，避免中文在使用不同代码页的终端中出现乱码。
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+} catch { }
+
 $root = Split-Path -Parent $PSScriptRoot
+
+function Find-BuiltExe([string]$name) {
+    $binRoot = Join-Path $root 'src\SinkLite\bin'
+    $toolRoot = Join-Path $root 'tools\SinkProbe\bin'
+    $paths = @()
+    if (Test-Path $binRoot) { $paths += $binRoot }
+    if (Test-Path $toolRoot) { $paths += $toolRoot }
+    foreach ($p in $paths) {
+        $hit = Get-ChildItem -Path $p -Recurse -Filter $name -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($hit) { return $hit }
+    }
+    return $null
+}
 
 Write-Host '=== BlueAudioSink 音频流向诊断 ===' -ForegroundColor Cyan
 Write-Host ''
 
 # 1) 定位可执行文件
-$exe = Get-ChildItem -Path (Join-Path $root 'src\SinkLite\bin') -Recurse -Filter 'BlueAudioSink.exe' -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$exe = Find-BuiltExe 'BlueAudioSink.exe'
 
 if (-not $exe) {
     Write-Host '未找到已发布的 BlueAudioSink.exe，请先运行：' -ForegroundColor Yellow
@@ -30,8 +49,7 @@ Write-Host ''
 
 # 3) 音频端点概览
 Write-Host '--- 全部音频端点（含未插入/禁用）---' -ForegroundColor Cyan
-$probe = Get-ChildItem -Path (Join-Path $root 'tools\SinkProbe\bin') -Recurse -Filter 'SinkProbe.exe' -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$probe = Find-BuiltExe 'SinkProbe.exe'
 
 if ($probe) {
     & $probe.FullName endpoints

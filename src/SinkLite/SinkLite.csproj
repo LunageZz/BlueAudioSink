@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    重要：必须保持 OutputType=Exe。改成 WinExe 会让 SDK 静默引入
+    Microsoft.WindowsDesktop.App（实测 10 MB -> 44 MB）。
+    需要隐藏控制台窗口时用 app.manifest 或 editbin，不要改这里。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <RootNamespace>SinkLite</RootNamespace>
+    <AssemblyName>BlueAudioSink</AssemblyName>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- 必需：NAudio 与 IPolicyConfig 依赖内建 COM 互操作；
+         开启裁剪后默认被禁用，运行时会抛 NotSupportedException。 -->
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <DebugType>none</DebugType>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- 只引用 Wasapi 子包：NAudio 主包会连带 NAudio.WinForms，
+         进而把 Microsoft.WindowsDesktop.App（WPF）拖进发布产物，实测体积 10 MB -> 44 MB。 -->
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+  </ItemGroup>
+  <!--
+    托盘状态图标以资源形式内嵌。
+    刻意不使用 System.Drawing/Bitmap：System.Drawing.Common 会把
+    Microsoft.WindowsDesktop.App（WPF）拖进发布产物，实测体积 10 MB -> 44 MB。
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\gray.ico" LogicalName="dot.gray.ico" />
+    <EmbeddedResource Include="Assets\yellow.ico" LogicalName="dot.yellow.ico" />
+    <EmbeddedResource Include="Assets\blue.ico" LogicalName="dot.blue.ico" />
+    <EmbeddedResource Include="Assets\green.ico" LogicalName="dot.green.ico" />
+    <EmbeddedResource Include="Assets\red.ico" LogicalName="dot.red.ico" />
+  </ItemGroup>
+  <!--
+    发布后把子系统改为 WINDOWS，使双击启动不出现控制台窗口。
+    刻意不改 OutputType：WinExe 会让 SDK 引入 Microsoft.WindowsDesktop.App（+34 MB）。
+    editbin 来自 Visual Studio 的 MSVC 工具链，且不在 PATH 上，因此写全路径并在缺失时静默跳过。
+  -->
+  <PropertyGroup>
+    <EditBinPath Condition="'$(EditBinPath)' == ''">E:\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\editbin.exe</EditBinPath>
+  </PropertyGroup>
+  <Target Name="SetWindowsSubsystemForTray" AfterTargets="Publish" Condition="'$(Configuration)' == 'Release'">
+    <Exec Command="&quot;$(EditBinPath)&quot; /SUBSYSTEM:WINDOWS &quot;$(PublishDir)BlueAudioSink.exe&quot;"
+          ContinueOnError="true"
+          Condition="Exists('$(EditBinPath)')" />
+  </Target>
+</Project>

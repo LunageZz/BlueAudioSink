@@ -1,0 +1,34 @@
+# 构建产物
+bin/
+obj/
+publish/
+
+# 用户配置与日志（运行时生成，不入库）
+settings.ini
+logs/
+*.jsonl
+
+# Visual Studio / Rider 本地状态
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# 测试与调试
+[Tt]est[Rr]esult*/
+*.coverage
+*.coveragexml
+*.trx
+*.log
+*.dmp
+
+# 发布与安装包
+artifacts/
+*.zip
+*.nupkg
+
+# 操作系统
+Thumbs.db
+desktop.ini

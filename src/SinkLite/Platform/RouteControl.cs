@@ -51,6 +51,20 @@ namespace SinkLite.Platform
             return renders.FirstOrDefault(e => !e.IsVirtual);
         }
 
+        /// <summary>列出可选的物理输出端点（排除虚拟声卡与蓝牙回环端点）。</summary>
+        public IReadOnlyList<EndpointInfo> ListPhysicalRenders()
+        {
+            List<EndpointInfo> result = new List<EndpointInfo>();
+            foreach (EndpointInfo e in watcher.Sample())
+            {
+                if (e.IsRender && e.IsActive && !e.IsVirtual)
+                {
+                    result.Add(e);
+                }
+            }
+            return result;
+        }
+
         /// <summary>把默认多媒体/通信输出切换到指定端点。</summary>
         public bool SetDefaultRender(string deviceId, out string error)
         {

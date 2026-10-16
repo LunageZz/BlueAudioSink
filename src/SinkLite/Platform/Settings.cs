@@ -16,6 +16,9 @@ namespace SinkLite.Platform
 
         public int SampleSeconds { get; set; } = 2;
 
+        /// <summary>首选输出端点 ID。非空时程序会把默认输出锁定在它上面。</summary>
+        public string PreferredRenderId { get; set; } = string.Empty;
+
         public static string FilePath
         {
             get
@@ -62,6 +65,9 @@ namespace SinkLite.Platform
                         case "autoconnect":
                             settings.AutoConnect = value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase);
                             break;
+                        case "preferredrenderid":
+                            settings.PreferredRenderId = value;
+                            break;
                         case "sampleseconds":
                             int seconds;
                             if (int.TryParse(value, out seconds) && seconds >= 1 && seconds <= 30)
@@ -91,6 +97,7 @@ namespace SinkLite.Platform
                 sb.AppendLine("deviceid=" + (DeviceId ?? string.Empty));
                 sb.AppendLine("autoconnect=" + (AutoConnect ? "1" : "0"));
                 sb.AppendLine("sampleseconds=" + SampleSeconds);
+                sb.AppendLine("preferredrenderid=" + (PreferredRenderId ?? string.Empty));
                 File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
             }
             catch

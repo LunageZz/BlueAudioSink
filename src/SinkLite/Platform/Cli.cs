@@ -16,6 +16,9 @@ namespace SinkLite.Platform
         public bool ConnectOnce { get; set; }
 
         public bool NoTray { get; set; }
+
+        /// <summary>--lock-output 指定的输出设备名称片段。</summary>
+        public string LockOutputName { get; set; }
     }
 
     internal static class Cli
@@ -52,6 +55,13 @@ namespace SinkLite.Platform
                         options.ConnectOnce = true;
                         options.NoTray = true;
                         break;
+                    case "--lock-output":
+                        if (i + 1 < args.Length && !string.IsNullOrWhiteSpace(args[i + 1]))
+                        {
+                            options.LockOutputName = args[i + 1];
+                            i++;
+                        }
+                        break;
                     case "--diagnose":
                         options.NoTray = true;
                         int seconds = 30;
@@ -83,6 +93,7 @@ namespace SinkLite.Platform
                 "  --list         列出可接收的已配对设备后退出",
                 "  --connect      连接后进入监听并输出状态变化（Ctrl+C 退出）",
                 "  --diagnose [秒] 诊断模式：采样并输出三层归因（默认 30 秒）",
+                "  --lock-output 名称片段   把声音输出锁定到匹配的设备（会自动记住）",
                 "  --console      不启动托盘，仅控制台运行",
                 "  --help         显示本帮助",
                 "",

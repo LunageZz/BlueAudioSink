@@ -99,7 +99,7 @@ namespace SinkLite
                     return RunConnected(controller);
                 }
 
-                return RunTray(controller);
+                return RunTray(controller, options);
             }
         }
 
@@ -214,17 +214,29 @@ namespace SinkLite
             return 0;
         }
 
-        private static int RunTray(SinkController controller)
+        private static int RunTray(SinkController controller, CliOptions options)
         {
             WaitForDevices(controller);
+
             using (EndpointWatcher watcher = new EndpointWatcher())
             {
                 RouteControl route = new RouteControl(watcher);
-                using (SinkLite.Tray.TrayHost host = new SinkLite.Tray.TrayHost(controller, route, watcher, log))
+                controller.AttachRoute(route);
+
+                if (!string.IsNullOrEmpty(options.LockOutputName))
                 {
+                    string hit = controller.SetPreferredRenderByName(options.LockOutputName);
+                    log.Info("Route.LockArgument", ("requested", options.LockOutputName), ("matched", hit ?? "(未命中)"));
+                }
+
+                using (SinkLite.Tray.TrayHost host = new SinkLite.Tray.TrayHost(controller, route, log))
+                using (SinkLite.Tray.UiHost ui = new SinkLite.Tray.UiHost(controller, host, log))
+                {
+                    host.Ui = ui;
+                    host.Create();
+                    ui.Create();
                     log.Info("Tray.Starting", ("devices", controller.Devices.Count));
 
-                    // 按配置自动连接：默认开启，让用户不必每次手动点连接。
                     Settings settings = Settings.Load();
                     if (settings.AutoConnect)
                     {
@@ -233,10 +245,37 @@ namespace SinkLite
                         log.Info("Tray.AutoConnectRequested", ("device", string.IsNullOrEmpty(target) ? "(第一个可用)" : target));
                     }
 
-                    host.Run();
+                    // 启动即显示主界面。
+                    ui.ShowWindow();
+                    MessageLoop.Run(host);
+                    log.Info("App.Exited");
                 }
             }
+
             return 0;
+        }
+
+        /// <summary>
+        /// 统一消息循环：托盘隐藏窗口与主窗口共用，逐个分发各自的消息。
+        /// 所有 WinRT 调用都在后台线程，UI 与消息处理都在本线程，避免跨线程问题。
+        /// </summary>
+        private static class MessageLoop
+        {
+            public static void Run(SinkLite.Tray.TrayHost tray)
+            {
+                Win32.MSG msg;
+                while (Win32.GetMessage(out msg, IntPtr.Zero, 0, 0) > 0)
+                {
+                    if (tray.Handle != IntPtr.Zero && msg.hwnd == tray.Handle)
+                    {
+                        tray.Dispatch(ref msg);
+                        continue;
+                    }
+
+                    Win32.TranslateMessage(ref msg);
+                    Win32.DispatchMessage(ref msg);
+                }
+            }
         }
 
         private static void WaitForDevices(SinkController controller)

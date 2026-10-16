@@ -16,6 +16,8 @@ namespace SinkLite.Core
 
         public string RenderEndpointName { get; set; }
 
+        public string RenderEndpointId { get; set; }
+
         public bool RenderIsVirtual { get; set; }
 
         public bool AudioFlowing { get; set; }
@@ -53,6 +55,7 @@ namespace SinkLite.Core
             if (render != null)
             {
                 finding.RenderEndpointName = render.Name;
+                finding.RenderEndpointId = render.Id;
                 finding.RenderIsVirtual = render.IsVirtual;
             }
 

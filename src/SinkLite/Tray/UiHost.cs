@@ -6,16 +6,34 @@ using SinkLite.Platform;
 namespace SinkLite.Tray
 {
     /// <summary>
-    /// 主窗口：Win32 + GDI 手写。针对性修正三类问题：
-    ///   1) 卡顿 —— 布局与端点采样结果缓存，仅在数据变化时重绘；使用双缓冲。
-    ///   2) 发糊 —— 进程已声明 Per-Monitor V2 DPI 感知，字体与坐标按窗口 DPI 缩放。
-    ///   3) 不自适应 —— 所有位置依据客户区尺寸计算，窗口可任意缩放。
+    /// 主窗口：Win32 + GDI 手绘。
+    ///
+    /// 设计要点：
+    ///   - 输出设备下拉是“就地展开”的自绘列表，不再弹系统菜单，避免割裂感；
+    ///   - 按钮具备 常态 / 悬停 / 按下 / 禁用 四种视觉状态；
+    ///   - 文案精简：只保留状态与必要标签，冗长说明全部移除；
+    ///   - 双缓冲绘制 + 仅内容变化时重绘，保证拖动与点击跟手。
     /// </summary>
     internal sealed class UiHost : SinkHost, IDisposable
     {
         private const int IdTimer = 1;
-        private const int MaxDeviceRows = 6;
-        private const uint DefaultDpi = 96;
+        private const int MaxDeviceRows = 5;
+        private const int MaxDropdownRows = 6;
+
+        private const int PadX = 16;
+        private const int HeaderHeight = 64;
+        private const int DeviceRowHeight = 30;
+        private const int DropdownRowHeight = 32;
+        private const int ButtonHeight = 36;
+
+        // 悬停/按下/下拉区域标识
+        private const int AreaNone = -1;
+        private const int AreaConnect = 1;
+        private const int AreaDisconnect = 2;
+        private const int AreaRefresh = 3;
+        private const int AreaOutput = 4;
+        private const int AreaDeviceBase = 100;
+        private const int AreaDropdownBase = 200;
 
         private readonly SinkController controller;
         private readonly TrayHost tray;
@@ -26,30 +44,36 @@ namespace SinkLite.Tray
         private IntPtr fontTitle;
         private IntPtr fontBody;
         private IntPtr fontSmall;
+        private IntPtr fontCaption;
         private IntPtr brushBack;
-        private IntPtr brushPanel;
+        private IntPtr brushCard;
+        private IntPtr brushBorder;
         private IntPtr brushAccent;
-        private IntPtr brushButton;
-        private IntPtr brushHover;
-        private IntPtr brushSelect;
+        private IntPtr brushAccentHover;
+        private IntPtr brushAccentPress;
+        private IntPtr brushBtn;
+        private IntPtr brushBtnHover;
+        private IntPtr brushBtnPress;
+        private IntPtr brushRowHover;
+        private IntPtr brushRowSelected;
 
-        private uint dpi = DefaultDpi;
         private double scale = 1.0;
-        private int fontTitleHeight;
         private bool exiting;
+        private bool mouseInside;
 
         private int selectedDevice;
-        private int hoverZone = -1;      // 0=连接 1=断开 2=刷新 3=输出 4=设备行
-        private int hoverRow = -1;
+        private int hoverArea = AreaNone;
+        private int pressedArea = AreaNone;
+        private bool dropdownOpen;
 
-        // 缓存：避免在重绘路径里枚举音频端点（那是重活，是卡顿的主因）
         private IReadOnlyList<EndpointInfo> cachedOutputs = new List<EndpointInfo>();
-        private string cachedPreferredName = "（未选择输出设备）";
+        private string cachedPreferredName = "选择输出设备";
         private DateTime lastOutputRefresh = DateTime.MinValue;
         private DateTime lastDeviceRefresh = DateTime.MinValue;
-
-        // 重绘去抖
         private string lastPaintKey = string.Empty;
+
+        private Win32.RECT dropdownRect;
+        private int dropdownRows;
 
         public UiHost(SinkController controller, TrayHost tray, Log log)
         {
@@ -73,12 +97,14 @@ namespace SinkLite.Tray
             {
             }
 
-            dpi = Win32.GetDpiForSystem();
+            uint dpi = Win32.GetDpiForSystem();
             if (dpi < 72 || dpi > 480)
             {
-                dpi = DefaultDpi;
+                dpi = 96;
             }
-            scale = dpi / (double)DefaultDpi;
+            scale = dpi / 96.0;
+
+            CreateGdiObjects();
 
             wndProc = WindowProc;
             IntPtr instance = Win32.GetModuleHandle(null);
@@ -91,47 +117,59 @@ namespace SinkLite.Tray
             wc.lpszClassName = "BlueAudioSinkMainWindow";
             Win32.RegisterClassEx(ref wc);
 
-            RecreateFonts();
-
-            // 依据 DPI 计算初始窗口尺寸（客户区 + 标题栏）
-            int clientWidth = S(600);
-            int clientHeight = S(480);
             hwnd = Win32.CreateWindowEx(
                 0,
                 "BlueAudioSinkMainWindow",
-                "BlueAudioSink — 蓝牙音频接收",
-                Win32.WS_CAPTION | Win32.WS_SYSMENU | Win32.WS_MINIMIZEBOX | 0x00040000 /*WS_THICKFRAME*/,
-                S(120), S(120), clientWidth, clientHeight,
+                "BlueAudioSink",
+                Win32.WS_CAPTION | Win32.WS_SYSMENU | Win32.WS_MINIMIZEBOX | 0x00040000,
+                S(140), S(140), S(560), S(420),
                 IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
 
             Win32.SetTimer(hwnd, new IntPtr(IdTimer), 1000, IntPtr.Zero);
             controller.SnapshotChanged += OnSnapshotChanged;
-            log.Info("Ui.Created", ("dpi", (int)dpi), ("scale", scale));
+
+            Win32.RECT created;
+            Win32.GetClientRect(hwnd, out created);
+            log.Info("Ui.Created",
+                ("dpi", (int)dpi),
+                ("scale", scale),
+                ("requestedW", S(560)),
+                ("requestedH", S(420)),
+                ("clientW", created.Right - created.Left),
+                ("clientH", created.Bottom - created.Top));
+        }
+
+        private void CreateGdiObjects()
+        {
+            brushBack = Win32.CreateSolidBrush(Win32.Rgb(246, 246, 246));
+            brushCard = Win32.CreateSolidBrush(Win32.Rgb(255, 255, 255));
+            brushBorder = Win32.CreateSolidBrush(Win32.Rgb(226, 226, 226));
+            // 三态对比刻意拉开：悬停更亮、按下更深，让点击反馈一眼可辨
+            brushAccent = Win32.CreateSolidBrush(Win32.Rgb(0, 120, 215));
+            brushAccentHover = Win32.CreateSolidBrush(Win32.Rgb(40, 150, 240));
+            brushAccentPress = Win32.CreateSolidBrush(Win32.Rgb(0, 85, 160));
+            brushBtn = Win32.CreateSolidBrush(Win32.Rgb(255, 255, 255));
+            brushBtnHover = Win32.CreateSolidBrush(Win32.Rgb(232, 240, 250));
+            brushBtnPress = Win32.CreateSolidBrush(Win32.Rgb(206, 222, 240));
+            brushRowHover = Win32.CreateSolidBrush(Win32.Rgb(245, 245, 245));
+            brushRowSelected = Win32.CreateSolidBrush(Win32.Rgb(229, 241, 251));
+
+            fontTitle = Win32.CreateFontW(-S(20), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
+            fontBody = Win32.CreateFontW(-S(14), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
+            fontSmall = Win32.CreateFontW(-S(12), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
+            fontCaption = Win32.CreateFontW(-S(12), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
         }
 
         private void RecreateFonts()
         {
-            if (fontTitle != IntPtr.Zero)
-            {
-                Win32.DeleteObject(fontTitle);
-                Win32.DeleteObject(fontBody);
-                Win32.DeleteObject(fontSmall);
-            }
-
-            fontTitleHeight = S(22);
-            fontTitle = Win32.CreateFontW(-fontTitleHeight, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
+            Win32.DeleteObject(fontTitle);
+            Win32.DeleteObject(fontBody);
+            Win32.DeleteObject(fontSmall);
+            Win32.DeleteObject(fontCaption);
+            fontTitle = Win32.CreateFontW(-S(20), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
             fontBody = Win32.CreateFontW(-S(14), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
             fontSmall = Win32.CreateFontW(-S(12), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
-
-            if (brushBack == IntPtr.Zero)
-            {
-                brushBack = Win32.CreateSolidBrush(Win32.Rgb(250, 250, 250));
-                brushPanel = Win32.CreateSolidBrush(Win32.Rgb(255, 255, 255));
-                brushAccent = Win32.CreateSolidBrush(Win32.Rgb(0, 120, 215));
-                brushButton = Win32.CreateSolidBrush(Win32.Rgb(234, 234, 234));
-                brushHover = Win32.CreateSolidBrush(Win32.Rgb(216, 216, 216));
-                brushSelect = Win32.CreateSolidBrush(Win32.Rgb(229, 241, 251));
-            }
+            fontCaption = Win32.CreateFontW(-S(12), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
         }
 
         public void ShowWindow()
@@ -161,12 +199,9 @@ namespace SinkLite.Tray
 
         private void OnSnapshotChanged(object sender, SinkSnapshot snapshot)
         {
-            // 关键：重绘请求不在这里直接做重活，只标脏；
-            // 真正的绘制由消息循环在空闲时合并执行。
             RequestRepaint(false);
         }
 
-        /// <summary>请求重绘。force=false 时若内容未变则跳过，避免无谓重绘造成卡顿。</summary>
         private void RequestRepaint(bool force)
         {
             if (hwnd == IntPtr.Zero)
@@ -189,26 +224,20 @@ namespace SinkLite.Tray
             return string.Concat(
                 (int)s.State, "|", s.Detail ?? "", "|", s.DeviceName ?? "", "|",
                 s.Peak.ToString("0.000"), "|", s.Hint ?? "", "|",
-                selectedDevice, "|", hoverZone, "|", hoverRow, "|",
+                selectedDevice, "|", hoverArea, "|", pressedArea, "|",
+                dropdownOpen ? 1 : 0, "|",
                 controller.Devices.Count, "|", cachedOutputs.Count, "|", cachedPreferredName);
         }
 
         private void OnTimer()
         {
-            // 刻意不在定时器里枚举蓝牙设备：每次枚举都会创建大量 WinRT COM 对象，
-            // 高频轮询会让句柄持续增长（实测 15 秒一次时约 15 个/秒）。
-            // 已配对设备几乎不变化，因此只在启动与用户点“刷新设备”时枚举。
             RefreshOutputCache(false);
             RequestRepaint(false);
         }
 
-        /// <summary>
-        /// 刷新输出端点缓存。默认 5 秒最多一次，且避开重绘路径，
-        /// 因为 MMDeviceEnumerator 枚举是相对昂贵的调用。
-        /// </summary>
         private void RefreshOutputCache(bool force)
         {
-            if (!force && DateTime.Now - lastOutputRefresh < TimeSpan.FromSeconds(5))
+            if (!force && DateTime.Now - lastOutputRefresh < TimeSpan.FromSeconds(10))
             {
                 return;
             }
@@ -227,74 +256,224 @@ namespace SinkLite.Tray
                     }
                 }
                 cachedPreferredName = preferred ??
-                    (cachedOutputs.Count > 0 ? cachedOutputs[0].Name : "（未选择输出设备）");
+                    (cachedOutputs.Count > 0 ? cachedOutputs[0].Name : "选择输出设备");
             }
             catch
             {
             }
         }
 
-        private void OnMouseMove(IntPtr lParam)
+        // ===== 布局 =====
+
+        private struct Metrics
         {
-            int x = (short)(lParam.ToInt32() & 0xFFFF);
-            int y = (short)((lParam.ToInt32() >> 16) & 0xFFFF);
+            public int Width;
+            public int Height;
+            public int ContentLeft;
+            public int ContentWidth;
+            public int SourceLabelTop;
+            public int DeviceListTop;
+            public int VisibleRows;
+            public int OutputLabelTop;
+            public int OutputBoxTop;
+            public int OutputBoxBottom;
+            public int ButtonTop;
+            public int ButtonWidth;
+            public Win32.RECT ConnectRect;
+            public Win32.RECT DisconnectRect;
+            public Win32.RECT RefreshRect;
+            public Win32.RECT OutputRect;
+        }
 
-            Layout l = ComputeLayout();
-            int zone = HitZone(l, x, y);
-            int row = zone == 4 ? (y - l.ListTop) / l.RowHeight : -1;
+        private Metrics ComputeMetrics()
+        {
+            Win32.RECT client;
+            Win32.GetClientRect(hwnd, out client);
+            int width = Math.Max(client.Right - client.Left, S(360));
+            int height = Math.Max(client.Bottom - client.Top, S(280));
 
-            if (zone != hoverZone || row != hoverRow)
+            Metrics m = new Metrics();
+            m.Width = width;
+            m.Height = height;
+            m.ContentLeft = S(PadX);
+            m.ContentWidth = width - S(PadX) * 2;
+
+            m.SourceLabelTop = S(HeaderHeight) + S(10);
+            m.DeviceListTop = m.SourceLabelTop + S(22);
+
+            // 列表高度按“实际设备数”收缩，而不是占满可用空间，避免大片空白。
+            int bottomZone = S(ButtonHeight) + S(28);
+            int available = height - m.DeviceListTop - bottomZone - S(70);
+            int fitRows = Math.Max(1, available / S(DeviceRowHeight));
+            int wantRows = Math.Max(1, controller.Devices.Count);
+            m.VisibleRows = Math.Max(1, Math.Min(Math.Min(MaxDeviceRows, wantRows), fitRows));
+
+            int listBottom = m.DeviceListTop + m.VisibleRows * S(DeviceRowHeight);
+            m.OutputLabelTop = listBottom + S(14);
+            m.OutputBoxTop = m.OutputLabelTop + S(22);
+            m.OutputBoxBottom = m.OutputBoxTop + S(34);
+            m.OutputRect = Rect(m.ContentLeft, m.OutputBoxTop,
+                m.ContentLeft + m.ContentWidth, m.OutputBoxBottom);
+
+            // 按钮紧跟输出框下方（而不是钉在窗口底部），避免内容与按钮之间出现大片空白；
+            // 若窗口被压得很矮，则退回“贴底”以保证按钮始终可见。
+            m.ButtonTop = m.OutputBoxBottom + S(18);
+            int maxButtonTop = height - S(ButtonHeight) - S(14);
+            if (m.ButtonTop > maxButtonTop)
             {
-                hoverZone = zone;
-                hoverRow = row;
+                m.ButtonTop = maxButtonTop;
+            }
+            int gap = S(10);
+            m.ButtonWidth = Math.Max(S(88), (m.ContentWidth - gap * 2) / 3);
+            m.ConnectRect = Rect(m.ContentLeft, m.ButtonTop,
+                m.ContentLeft + m.ButtonWidth, m.ButtonTop + S(ButtonHeight));
+            m.DisconnectRect = Rect(m.ConnectRect.Right + gap, m.ButtonTop,
+                m.ConnectRect.Right + gap + m.ButtonWidth, m.ButtonTop + S(ButtonHeight));
+            m.RefreshRect = Rect(m.DisconnectRect.Right + gap, m.ButtonTop,
+                m.DisconnectRect.Right + gap + m.ButtonWidth, m.ButtonTop + S(ButtonHeight));
+
+            return m;
+        }
+
+        /// <summary>计算下拉浮层：优先向下展开，空间不足则向上。</summary>
+        private void ComputeDropdown(Metrics m)
+        {
+            dropdownRows = Math.Max(1, Math.Min(MaxDropdownRows, cachedOutputs.Count));
+            if (dropdownRows == 0)
+            {
+                dropdownRect = Rect(m.OutputRect.Left, m.OutputRect.Bottom + S(4),
+                    m.OutputRect.Right, m.OutputRect.Bottom + S(4));
+                return;
+            }
+
+            int height = dropdownRows * S(DropdownRowHeight) + S(8);
+            int top = m.OutputRect.Bottom + S(4);
+            if (top + height > m.Height - S(8))
+            {
+                top = Math.Max(S(8), m.OutputRect.Top - S(4) - height);
+            }
+
+            dropdownRect = Rect(m.OutputRect.Left, top, m.OutputRect.Right, top + height);
+        }
+
+        private int HitTest(int x, int y)
+        {
+            Metrics m = ComputeMetrics();
+
+            if (dropdownOpen)
+            {
+                ComputeDropdown(m);
+                if (Contains(dropdownRect, x, y))
+                {
+                    int index = (y - dropdownRect.Top - S(4)) / S(DropdownRowHeight);
+                    if (index >= 0 && index < dropdownRows)
+                    {
+                        return AreaDropdownBase + index;
+                    }
+                    return AreaNone;
+                }
+            }
+
+            if (Contains(m.ConnectRect, x, y)) { return AreaConnect; }
+            if (Contains(m.DisconnectRect, x, y)) { return AreaDisconnect; }
+            if (Contains(m.RefreshRect, x, y)) { return AreaRefresh; }
+            if (Contains(m.OutputRect, x, y)) { return AreaOutput; }
+
+            if (x >= m.ContentLeft && x <= m.ContentLeft + m.ContentWidth &&
+                y >= m.DeviceListTop && y < m.DeviceListTop + m.VisibleRows * S(DeviceRowHeight))
+            {
+                int index = (y - m.DeviceListTop) / S(DeviceRowHeight);
+                if (index >= 0 && index < controller.Devices.Count && index < m.VisibleRows)
+                {
+                    return AreaDeviceBase + index;
+                }
+            }
+
+            return AreaNone;
+        }
+
+        // ===== 输入处理 =====
+
+        private void OnMouseMove(int x, int y)
+        {
+            if (!mouseInside)
+            {
+                mouseInside = true;
+                Win32.TRACKMOUSEEVENT tme = new Win32.TRACKMOUSEEVENT();
+                tme.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(Win32.TRACKMOUSEEVENT));
+                tme.dwFlags = Win32.TME_LEAVE;
+                tme.hwndTrack = hwnd;
+                Win32.TrackMouseEvent(ref tme);
+            }
+
+            int area = HitTest(x, y);
+            if (area != hoverArea)
+            {
+                hoverArea = area;
                 RequestRepaint(true);
             }
         }
 
-        private int HitZone(Layout l, int x, int y)
+        private void OnMouseLeave()
         {
-            if (Contains(l.ConnectRect, x, y)) { return 0; }
-            if (Contains(l.DisconnectRect, x, y)) { return 1; }
-            if (Contains(l.RefreshRect, x, y)) { return 2; }
-            if (Contains(l.OutputRect, x, y)) { return 3; }
-            if (x >= l.PadX && x <= l.PadX + l.ContentWidth &&
-                y >= l.ListTop && y < l.ListTop + l.RowHeight * l.VisibleRows)
+            mouseInside = false;
+            if (hoverArea != AreaNone)
             {
-                return 4;
+                hoverArea = AreaNone;
+                RequestRepaint(true);
             }
-            return -1;
         }
 
-        private static bool Contains(Win32.RECT r, int x, int y)
+        private void OnMouseDown(int x, int y)
         {
-            return x >= r.Left && x < r.Right && y >= r.Top && y < r.Bottom;
+            pressedArea = HitTest(x, y);
+            RequestRepaint(true);
         }
 
-        private void OnClick(IntPtr lParam)
+        private void OnMouseUp(int x, int y)
         {
-            int x = (short)(lParam.ToInt32() & 0xFFFF);
-            int y = (short)((lParam.ToInt32() >> 16) & 0xFFFF);
+            int releaseArea = HitTest(x, y);
+            int area = pressedArea;
+            pressedArea = AreaNone;
 
-            Layout l = ComputeLayout();
-            int zone = HitZone(l, x, y);
-
-            if (zone == 4)
+            if (area != AreaNone && area == releaseArea)
             {
-                int index = (y - l.ListTop) / l.RowHeight;
-                IReadOnlyList<SinkDevice> devices = controller.Devices;
-                if (index >= 0 && index < devices.Count)
+                Activate(area);
+            }
+            else if (dropdownOpen)
+            {
+                // 在下拉之外松开鼠标（含空白区域）一律收起
+                dropdownOpen = false;
+            }
+
+            RequestRepaint(true);
+        }
+
+        private void Activate(int area)
+        {
+            if (area >= AreaDropdownBase)
+            {
+                int index = area - AreaDropdownBase;
+                if (index >= 0 && index < cachedOutputs.Count)
                 {
-                    selectedDevice = index;
-                    controller.RequestConnect(devices[index].Id);
-                    log.Info("Ui.ConnectClicked", ("device", devices[index].Name));
-                    RequestRepaint(true);
+                    EndpointInfo pick = cachedOutputs[index];
+                    controller.SetPreferredRender(pick.Id, pick.Name);
+                    cachedPreferredName = pick.Name;
+                    lastOutputRefresh = DateTime.MinValue;
+                    log.Info("Ui.OutputPicked", ("endpoint", pick.Name));
                 }
+                dropdownOpen = false;
                 return;
             }
 
-            switch (zone)
+            switch (area)
             {
-                case 0:
+                case AreaOutput:
+                    dropdownOpen = !dropdownOpen;
+                    RefreshOutputCache(true);
+                    return;
+
+                case AreaConnect:
                 {
                     IReadOnlyList<SinkDevice> devices = controller.Devices;
                     string deviceId = selectedDevice >= 0 && selectedDevice < devices.Count
@@ -302,58 +481,56 @@ namespace SinkLite.Tray
                         : null;
                     controller.RequestConnect(deviceId);
                     log.Info("Ui.ConnectClicked", ("device", deviceId ?? "(默认)"));
-                    break;
+                    return;
                 }
 
-                case 1:
+                case AreaDisconnect:
                     controller.RequestDisconnect();
                     log.Info("Ui.DisconnectClicked");
-                    break;
+                    return;
 
-                case 2:
+                case AreaRefresh:
                     controller.RequestRefreshDevices();
                     lastDeviceRefresh = DateTime.Now;
-                    break;
+                    lastOutputRefresh = DateTime.MinValue;
+                    return;
+            }
 
-                case 3:
-                    ShowOutputMenu();
-                    break;
+            if (area >= AreaDeviceBase)
+            {
+                int index = area - AreaDeviceBase;
+                IReadOnlyList<SinkDevice> devices = controller.Devices;
+                if (index >= 0 && index < devices.Count)
+                {
+                    selectedDevice = index;
+                    controller.RequestConnect(devices[index].Id);
+                    log.Info("Ui.DevicePicked", ("device", devices[index].Name));
+                }
             }
         }
 
-        private void ShowOutputMenu()
+        private void OnKeyDown(int vk)
         {
-            RefreshOutputCache(true);
-            IntPtr menu = Win32.CreatePopupMenu();
-            if (cachedOutputs.Count == 0)
+            if (vk == 0x1B /*VK_ESCAPE*/ && dropdownOpen)
             {
-                Win32.AppendMenu(menu, 0, IntPtr.Zero, "（未发现可用输出设备）");
-            }
-            else
-            {
-                for (int i = 0; i < cachedOutputs.Count; i++)
-                {
-                    bool preferred = cachedOutputs[i].Id == controller.PreferredRenderId;
-                    Win32.AppendMenu(menu, 0, new IntPtr(TrayHost.CmdOutputBase + i),
-                        (preferred ? "● " : "   ") + cachedOutputs[i].Name);
-                }
-            }
-
-            Win32.POINT p;
-            Win32.GetCursorPos(out p);
-            Win32.SetForegroundWindow(hwnd);
-            int cmd = Win32.TrackPopupMenu(menu, 0x0100 /*TPM_RETURNCMD*/, p.X, p.Y, 0, hwnd, IntPtr.Zero);
-            Win32.DestroyMenu(menu);
-            if (cmd != 0)
-            {
-                tray.HandleCommand(cmd);
-                RefreshOutputCache(true);
+                dropdownOpen = false;
                 RequestRepaint(true);
             }
         }
 
         private IntPtr WindowProc(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam)
         {
+            // 只有鼠标消息的 lParam 才是坐标；其他消息（如 WM_DPICHANGED）的 lParam
+            // 可能是 64 位指针，直接 ToInt32() 会抛 OverflowException 导致进程崩溃。
+            int x = 0;
+            int y = 0;
+            if (msg == Win32.WM_MOUSEMOVE || msg == Win32.WM_LBUTTONDOWN || msg == Win32.WM_LBUTTONUP)
+            {
+                long lp = lParam.ToInt64();
+                x = (short)(lp & 0xFFFF);
+                y = (short)((lp >> 16) & 0xFFFF);
+            }
+
             switch (msg)
             {
                 case Win32.WM_PAINT:
@@ -368,13 +545,12 @@ namespace SinkLite.Tray
                     return IntPtr.Zero;
 
                 case 0x02E0: // WM_DPICHANGED
-                    dpi = (uint)(wParam.ToInt32() & 0xFFFF);
-                    if (dpi < 72 || dpi > 480)
+                    uint dpi = (uint)(wParam.ToInt32() & 0xFFFF);
+                    if (dpi >= 72 && dpi <= 480)
                     {
-                        dpi = DefaultDpi;
+                        scale = dpi / 96.0;
+                        RecreateFonts();
                     }
-                    scale = dpi / (double)DefaultDpi;
-                    RecreateFonts();
                     RequestRepaint(true);
                     return IntPtr.Zero;
 
@@ -382,12 +558,24 @@ namespace SinkLite.Tray
                     OnTimer();
                     return IntPtr.Zero;
 
-                case Win32.WM_LBUTTONDOWN:
-                    OnClick(lParam);
+                case Win32.WM_MOUSEMOVE:
+                    OnMouseMove(x, y);
                     return IntPtr.Zero;
 
-                case Win32.WM_MOUSEMOVE:
-                    OnMouseMove(lParam);
+                case Win32.WM_MOUSELEAVE:
+                    OnMouseLeave();
+                    return IntPtr.Zero;
+
+                case Win32.WM_LBUTTONDOWN:
+                    OnMouseDown(x, y);
+                    return IntPtr.Zero;
+
+                case Win32.WM_LBUTTONUP:
+                    OnMouseUp(x, y);
+                    return IntPtr.Zero;
+
+                case Win32.WM_KEYDOWN:
+                    OnKeyDown(wParam.ToInt32());
                     return IntPtr.Zero;
 
                 case Win32.WM_CLOSE:
@@ -407,64 +595,7 @@ namespace SinkLite.Tray
             return Win32.DefWindowProc(hWnd, msg, wParam, lParam);
         }
 
-        /// <summary>依据客户区尺寸计算的布局。所有坐标都随窗口大小与 DPI 变化。</summary>
-        private struct Layout
-        {
-            public int PadX;
-            public int ContentWidth;
-            public int HeaderHeight;
-            public int ListTitleTop;
-            public int ListTop;
-            public int RowHeight;
-            public int VisibleRows;
-            public int OutputTitleTop;
-            public int PeakTop;
-            public int ButtonTop;
-            public int HintTop;
-            public Win32.RECT OutputRect;
-            public Win32.RECT ConnectRect;
-            public Win32.RECT DisconnectRect;
-            public Win32.RECT RefreshRect;
-        }
-
-        private Layout ComputeLayout()
-        {
-            Win32.RECT client;
-            Win32.GetClientRect(hwnd, out client);
-            int width = Math.Max(client.Right - client.Left, S(320));
-            int height = Math.Max(client.Bottom - client.Top, S(240));
-
-            Layout l = new Layout();
-            l.PadX = S(16);
-            l.ContentWidth = width - l.PadX * 2;
-            l.HeaderHeight = S(72);
-            l.ListTitleTop = l.HeaderHeight + S(2);
-            l.ListTop = l.HeaderHeight + S(22);
-            l.RowHeight = S(26);
-
-            // 底部区高度固定，剩余空间全部给设备列表 —— 这是自适应缩放的关键
-            int bottomHeight = S(132);
-            int availForList = height - l.ListTop - bottomHeight;
-            l.VisibleRows = Math.Max(1, Math.Min(MaxDeviceRows, availForList / l.RowHeight));
-
-            l.OutputTitleTop = l.ListTop + l.RowHeight * l.VisibleRows + S(8);
-            int outputTop = l.OutputTitleTop + S(20);
-            l.OutputRect = Rect(l.PadX, outputTop, l.PadX + l.ContentWidth, outputTop + S(30));
-
-            l.PeakTop = outputTop + S(38);
-            l.ButtonTop = height - S(76);
-            l.HintTop = l.ButtonTop + S(40);
-
-            int buttonWidth = Math.Max(S(96), Math.Min(S(140), (l.ContentWidth - S(24)) / 3));
-            int gap = S(12);
-            l.ConnectRect = Rect(l.PadX, l.ButtonTop, l.PadX + buttonWidth, l.ButtonTop + S(34));
-            l.DisconnectRect = Rect(l.ConnectRect.Right + gap, l.ButtonTop,
-                l.ConnectRect.Right + gap + buttonWidth, l.ButtonTop + S(34));
-            l.RefreshRect = Rect(l.DisconnectRect.Right + gap, l.ButtonTop,
-                l.DisconnectRect.Right + gap + buttonWidth, l.ButtonTop + S(34));
-
-            return l;
-        }
+        // ===== 绘制 =====
 
         private void Paint(IntPtr hWnd)
         {
@@ -472,11 +603,10 @@ namespace SinkLite.Tray
             IntPtr hdcScreen = Win32.BeginPaint(hWnd, out ps);
             IntPtr hdcMem = IntPtr.Zero;
             IntPtr hBitmap = IntPtr.Zero;
-            IntPtr hOldBitmap = IntPtr.Zero;
+            IntPtr hold = IntPtr.Zero;
 
             try
             {
-                // 双缓冲：先在内存 DC 上画完整帧，再一次性拷贝，消除闪烁与撕裂
                 Win32.RECT client;
                 Win32.GetClientRect(hWnd, out client);
                 int width = Math.Max(client.Right - client.Left, 1);
@@ -484,29 +614,32 @@ namespace SinkLite.Tray
 
                 hdcMem = Win32.CreateCompatibleDC(hdcScreen);
                 hBitmap = Win32.CreateCompatibleBitmap(hdcScreen, width, height);
-                hOldBitmap = Win32.SelectObject(hdcMem, hBitmap);
-
-                SinkSnapshot snapshot = controller.Current;
-                Layout l = ComputeLayout();
+                hold = Win32.SelectObject(hdcMem, hBitmap);
 
                 Win32.SetBkMode(hdcMem, Win32.TRANSPARENT);
                 Win32.RECT full = Rect(0, 0, width, height);
                 Win32.FillRect(hdcMem, ref full, brushBack);
 
-                DrawHeader(hdcMem, l, snapshot);
-                DrawDeviceList(hdcMem, l, snapshot);
-                DrawOutputRow(hdcMem, l);
-                DrawPeak(hdcMem, l, snapshot);
-                DrawButtons(hdcMem, l);
-                DrawHint(hdcMem, l, snapshot);
+                SinkSnapshot snapshot = controller.Current;
+                Metrics m = ComputeMetrics();
+
+                DrawHeader(hdcMem, m, snapshot);
+                DrawDeviceSection(hdcMem, m, snapshot);
+                DrawOutputSection(hdcMem, m);
+                DrawButtons(hdcMem, m);
+
+                if (dropdownOpen)
+                {
+                    DrawDropdown(hdcMem);
+                }
 
                 Win32.BitBlt(hdcScreen, 0, 0, width, height, hdcMem, 0, 0, Win32.SRCCOPY);
             }
             finally
             {
-                if (hOldBitmap != IntPtr.Zero)
+                if (hold != IntPtr.Zero)
                 {
-                    Win32.SelectObject(hdcMem, hOldBitmap);
+                    Win32.SelectObject(hdcMem, hold);
                 }
                 if (hBitmap != IntPtr.Zero)
                 {
@@ -520,148 +653,211 @@ namespace SinkLite.Tray
             }
         }
 
-        private void DrawHeader(IntPtr hdc, Layout l, SinkSnapshot snapshot)
+        private void DrawHeader(IntPtr hdc, Metrics m, SinkSnapshot snapshot)
         {
+            // 状态灯
             IntPtr dotBrush = Win32.CreateSolidBrush(StateColor(snapshot.State));
             IntPtr old = Win32.SelectObject(hdc, dotBrush);
-            int dotTop = S(16);
-            Win32.Ellipse(hdc, l.PadX, dotTop, l.PadX + S(16), dotTop + S(16));
+            int dotTop = S(22);
+            Win32.Ellipse(hdc, m.ContentLeft, dotTop, m.ContentLeft + S(12), dotTop + S(12));
             Win32.SelectObject(hdc, old);
             Win32.DeleteObject(dotBrush);
 
+            // 主状态
             IntPtr oldFont = Win32.SelectObject(hdc, fontTitle);
-            Win32.SetTextColor(hdc, Win32.Rgb(28, 28, 28));
-            Win32.RECT titleRect = Rect(l.PadX + S(28), S(10), l.PadX + l.ContentWidth, S(38));
+            Win32.SetTextColor(hdc, Win32.Rgb(24, 24, 24));
+            Win32.RECT titleRect = Rect(m.ContentLeft + S(22), S(6), m.ContentLeft + m.ContentWidth, S(38));
             Win32.DrawText(hdc, DescribeState(snapshot.State), -1, ref titleRect,
                 Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
 
-            Win32.SelectObject(hdc, fontBody);
-            Win32.SetTextColor(hdc, Win32.Rgb(72, 72, 72));
-            Win32.RECT detailRect = Rect(l.PadX + S(28), S(40), l.PadX + l.ContentWidth, S(66));
-            string device = string.IsNullOrEmpty(snapshot.DeviceName) ? "未选择设备" : snapshot.DeviceName;
-            Win32.DrawText(hdc, "设备：" + device + "　│　" + (snapshot.Detail ?? ""),
-                -1, ref detailRect,
+            // 副标题：设备名 · 峰值（合并原本散落的信息）
+            Win32.SelectObject(hdc, fontSmall);
+            Win32.SetTextColor(hdc, Win32.Rgb(118, 118, 118));
+            Win32.RECT subRect = Rect(m.ContentLeft + S(22), S(38), m.ContentLeft + m.ContentWidth, S(58));
+            string device = string.IsNullOrEmpty(snapshot.DeviceName) ? "无设备" : snapshot.DeviceName;
+            // 无声时不必显示 0.000，只在确实有电平或正在传输时显示
+            string sub = snapshot.Peak > 0.0005f
+                ? device + "  ·  " + snapshot.Peak.ToString("0.000")
+                : device;
+            Win32.DrawText(hdc, sub, -1, ref subRect,
                 Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
 
             Win32.SelectObject(hdc, oldFont);
         }
 
-        private void DrawDeviceList(IntPtr hdc, Layout l, SinkSnapshot snapshot)
+        private void DrawDeviceSection(IntPtr hdc, Metrics m, SinkSnapshot snapshot)
         {
-            Win32.SelectObject(hdc, fontSmall);
-            Win32.SetTextColor(hdc, Win32.Rgb(108, 108, 108));
-            Win32.RECT titleRect = Rect(l.PadX, l.ListTitleTop, l.PadX + l.ContentWidth, l.ListTitleTop + S(20));
-            Win32.DrawText(hdc, "音频源设备（点击即连接）", -1, ref titleRect,
-                Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE);
+            DrawCaption(hdc, "音频源", m.ContentLeft, m.SourceLabelTop);
 
             IReadOnlyList<SinkDevice> devices = controller.Devices;
             int drawn = 0;
-            for (int i = 0; i < devices.Count && drawn < l.VisibleRows; i++, drawn++)
+            for (int i = 0; i < devices.Count && drawn < m.VisibleRows; i++, drawn++)
             {
-                int top = l.ListTop + drawn * l.RowHeight;
-                bool isSelected = i == selectedDevice;
-                bool isActive = devices[i].Id == snapshot.DeviceId;
-                bool isHover = hoverZone == 4 && hoverRow == drawn;
+                int top = m.DeviceListTop + drawn * S(DeviceRowHeight);
+                Win32.RECT row = Rect(m.ContentLeft, top,
+                    m.ContentLeft + m.ContentWidth, top + S(DeviceRowHeight) - S(2));
 
-                if (isSelected || isHover)
+                bool isActive = devices[i].Id == snapshot.DeviceId;
+                int area = AreaDeviceBase + i;
+
+                if (isActive || hoverArea == area)
                 {
-                    IntPtr fill = isSelected ? brushSelect : brushHover;
-                    IntPtr ob = Win32.SelectObject(hdc, fill);
-                    Win32.Rectangle(hdc, l.PadX, top, l.PadX + l.ContentWidth, top + l.RowHeight - S(2));
-                    Win32.SelectObject(hdc, ob);
+                    IntPtr fill = isActive ? brushRowSelected : brushRowHover;
+                    RoundFill(hdc, row, S(6), fill);
                 }
 
                 Win32.SelectObject(hdc, fontBody);
-                Win32.SetTextColor(hdc, isActive ? Win32.Rgb(0, 110, 0) : Win32.Rgb(36, 36, 36));
-                Win32.RECT textRect = Rect(l.PadX + S(8), top, l.PadX + l.ContentWidth - S(8),
-                    top + l.RowHeight - S(2));
-                Win32.DrawText(hdc, (isActive ? "● " : "   ") + devices[i].Name, -1, ref textRect,
+                Win32.SetTextColor(hdc, isActive ? Win32.Rgb(0, 100, 40) : Win32.Rgb(38, 38, 38));
+                Win32.RECT textRect = Rect(row.Left + S(10), row.Top, row.Right - S(10), row.Bottom);
+                Win32.DrawText(hdc, devices[i].Name, -1, ref textRect,
                     Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
             }
 
             if (devices.Count == 0)
             {
-                Win32.SelectObject(hdc, fontBody);
-                Win32.SetTextColor(hdc, Win32.Rgb(150, 150, 150));
-                Win32.RECT emptyRect = Rect(l.PadX + S(8), l.ListTop, l.PadX + l.ContentWidth,
-                    l.ListTop + l.RowHeight);
-                Win32.DrawText(hdc, "未发现设备，请先在 Windows 蓝牙设置中配对手机", -1, ref emptyRect,
-                    Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE);
-            }
-
-            if (devices.Count > l.VisibleRows)
-            {
                 Win32.SelectObject(hdc, fontSmall);
-                Win32.SetTextColor(hdc, Win32.Rgb(140, 140, 140));
-                Win32.RECT moreRect = Rect(l.PadX, l.ListTop + drawn * l.RowHeight,
-                    l.PadX + l.ContentWidth, l.ListTop + (drawn + 1) * l.RowHeight);
-                Win32.DrawText(hdc, "…… 还有 " + (devices.Count - drawn) + " 个设备", -1, ref moreRect,
-                    Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE);
+                Win32.SetTextColor(hdc, Win32.Rgb(150, 150, 150));
+                Win32.RECT emptyRect = Rect(m.ContentLeft + S(2), m.DeviceListTop,
+                    m.ContentLeft + m.ContentWidth, m.DeviceListTop + S(DeviceRowHeight));
+                Win32.DrawText(hdc, "未发现设备，请先在 Windows 设置中配对手机", -1, ref emptyRect,
+                    Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
             }
         }
 
-        private void DrawOutputRow(IntPtr hdc, Layout l)
+        private void DrawOutputSection(IntPtr hdc, Metrics m)
         {
-            Win32.SelectObject(hdc, fontSmall);
-            Win32.SetTextColor(hdc, Win32.Rgb(108, 108, 108));
-            Win32.RECT titleRect = Rect(l.PadX, l.OutputTitleTop, l.PadX + l.ContentWidth,
-                l.OutputTitleTop + S(20));
-            Win32.DrawText(hdc, "声音输出设备（选定后自动锁定，防止被系统切走）", -1, ref titleRect,
-                Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
+            DrawCaption(hdc, "输出", m.ContentLeft, m.OutputLabelTop);
 
-            IntPtr ob = Win32.SelectObject(hdc, hoverZone == 3 ? brushHover : brushPanel);
-            Win32.Rectangle(hdc, l.OutputRect.Left, l.OutputRect.Top, l.OutputRect.Right, l.OutputRect.Bottom);
-            Win32.SelectObject(hdc, ob);
+            bool hover = hoverArea == AreaOutput;
+            bool pressed = pressedArea == AreaOutput;
+            RoundFill(hdc, m.OutputRect, S(8), pressed ? brushBtnPress : (hover ? brushBtnHover : brushCard));
+            RoundBorder(hdc, m.OutputRect, S(8), brushBorder);
 
             Win32.SelectObject(hdc, fontBody);
-            Win32.SetTextColor(hdc, Win32.Rgb(28, 28, 28));
-            Win32.RECT textRect = Rect(l.OutputRect.Left + S(10), l.OutputRect.Top,
-                l.OutputRect.Right - S(24), l.OutputRect.Bottom);
-            Win32.DrawText(hdc, cachedPreferredName + "   ▾", -1, ref textRect,
+            Win32.SetTextColor(hdc, Win32.Rgb(32, 32, 32));
+            Win32.RECT textRect = Rect(m.OutputRect.Left + S(12), m.OutputRect.Top,
+                m.OutputRect.Right - S(30), m.OutputRect.Bottom);
+            Win32.DrawText(hdc, cachedPreferredName, -1, ref textRect,
                 Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
-        }
 
-        private void DrawPeak(IntPtr hdc, Layout l, SinkSnapshot snapshot)
-        {
+            // 展开指示箭头
             Win32.SelectObject(hdc, fontSmall);
-            Win32.SetTextColor(hdc, Win32.Rgb(108, 108, 108));
-            Win32.RECT rect = Rect(l.PadX, l.PeakTop, l.PadX + l.ContentWidth, l.PeakTop + S(20));
-            Win32.DrawText(hdc, "音频电平：" + snapshot.Peak.ToString("0.0000") +
-                (snapshot.Peak > 0.0005f ? "　正在出声" : "　无音频"),
-                -1, ref rect, Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE);
+            Win32.SetTextColor(hdc, Win32.Rgb(110, 110, 110));
+            Win32.RECT arrowRect = Rect(m.OutputRect.Right - S(26), m.OutputRect.Top,
+                m.OutputRect.Right - S(10), m.OutputRect.Bottom);
+            Win32.DrawText(hdc, dropdownOpen ? "▴" : "▾", -1, ref arrowRect,
+                Win32.DT_CENTER | Win32.DT_VCENTER | Win32.DT_SINGLELINE);
         }
 
-        private void DrawButtons(IntPtr hdc, Layout l)
+        /// <summary>就地展开的下拉列表，直接绘制在主窗口内，不再弹系统菜单。</summary>
+        private void DrawDropdown(IntPtr hdc)
         {
-            DrawButton(hdc, l.ConnectRect, "连接 / 重连", hoverZone == 0, true);
-            DrawButton(hdc, l.DisconnectRect, "断开", hoverZone == 1, false);
-            DrawButton(hdc, l.RefreshRect, "刷新设备", hoverZone == 2, false);
+            ComputeDropdown(ComputeMetrics());
+            if (cachedOutputs.Count == 0)
+            {
+                return;
+            }
+
+            // 外框 + 白底，模拟轻量浮层
+            RoundFill(hdc, dropdownRect, S(8), brushCard);
+            RoundBorder(hdc, dropdownRect, S(8), brushBorder);
+
+            for (int i = 0; i < dropdownRows; i++)
+            {
+                int top = dropdownRect.Top + S(4) + i * S(DropdownRowHeight);
+                Win32.RECT row = Rect(dropdownRect.Left + S(4), top,
+                    dropdownRect.Right - S(4), top + S(DropdownRowHeight));
+
+                bool isCurrent = cachedOutputs[i].Name == cachedPreferredName;
+                bool isHover = hoverArea == AreaDropdownBase + i;
+
+                if (isHover || isCurrent)
+                {
+                    RoundFill(hdc, row, S(6), isCurrent ? brushRowSelected : brushRowHover);
+                }
+
+                Win32.SelectObject(hdc, isHover ? fontBody : fontSmall);
+                Win32.SetTextColor(hdc, isCurrent ? Win32.Rgb(0, 100, 40) : Win32.Rgb(40, 40, 40));
+                Win32.RECT textRect = Rect(row.Left + S(10), row.Top, row.Right - S(10), row.Bottom);
+                Win32.DrawText(hdc, cachedOutputs[i].Name, -1, ref textRect,
+                    Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
+            }
         }
 
-        private void DrawButton(IntPtr hdc, Win32.RECT rect, string text, bool hover, bool primary)
+        private void DrawButtons(IntPtr hdc, Metrics m)
         {
-            IntPtr brush = primary ? brushAccent : (hover ? brushHover : brushButton);
-            IntPtr old = Win32.SelectObject(hdc, brush);
-            Win32.RoundRect(hdc, rect.Left, rect.Top, rect.Right, rect.Bottom, S(6), S(6));
-            Win32.SelectObject(hdc, old);
+            DrawButton(hdc, m.ConnectRect, "连接", AreaConnect, true);
+            DrawButton(hdc, m.DisconnectRect, "断开", AreaDisconnect, false);
+            DrawButton(hdc, m.RefreshRect, "刷新", AreaRefresh, false);
+        }
+
+        private void DrawButton(IntPtr hdc, Win32.RECT rect, string text, int area, bool primary)
+        {
+            bool hover = hoverArea == area;
+            bool pressed = pressedArea == area;
+
+            IntPtr fill;
+            int textColor;
+
+            if (primary)
+            {
+                fill = pressed ? brushAccentPress : (hover ? brushAccentHover : brushAccent);
+                textColor = Win32.Rgb(255, 255, 255);
+            }
+            else
+            {
+                fill = pressed ? brushBtnPress : (hover ? brushBtnHover : brushBtn);
+                textColor = Win32.Rgb(38, 38, 38);
+            }
+
+            RoundFill(hdc, rect, S(8), fill);
+            if (!primary)
+            {
+                RoundBorder(hdc, rect, S(8), hover ? brushAccent : brushBorder);
+            }
 
             Win32.SelectObject(hdc, fontBody);
-            Win32.SetTextColor(hdc, primary ? Win32.Rgb(255, 255, 255) : Win32.Rgb(28, 28, 28));
+            Win32.SetTextColor(hdc, textColor);
             Win32.RECT textRect = rect;
+            // 按下时文字轻微下沉，强化反馈
+            if (pressed)
+            {
+                textRect.Top += S(1);
+                textRect.Bottom += S(1);
+            }
             Win32.DrawText(hdc, text, -1, ref textRect,
                 Win32.DT_CENTER | Win32.DT_VCENTER | Win32.DT_SINGLELINE);
         }
 
-        private void DrawHint(IntPtr hdc, Layout l, SinkSnapshot snapshot)
+        private void DrawCaption(IntPtr hdc, string text, int x, int top)
         {
-            Win32.SelectObject(hdc, fontSmall);
+            Win32.SelectObject(hdc, fontCaption);
             Win32.SetTextColor(hdc, Win32.Rgb(128, 128, 128));
-            Win32.RECT rect = Rect(l.PadX, l.HintTop, l.PadX + l.ContentWidth, l.HintTop + S(24));
-            string hint = string.IsNullOrEmpty(snapshot.Hint)
-                ? "关闭窗口会隐藏到托盘继续运行，音频不中断；完全退出请用托盘右键菜单。"
-                : "建议：" + snapshot.Hint;
-            Win32.DrawText(hdc, hint, -1, ref rect,
-                Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
+            Win32.RECT rect = Rect(x, top, x + S(200), top + S(18));
+            Win32.DrawText(hdc, text, -1, ref rect,
+                Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE);
+        }
+
+        private void RoundFill(IntPtr hdc, Win32.RECT rect, int radius, IntPtr brush)
+        {
+            IntPtr old = Win32.SelectObject(hdc, brush);
+            IntPtr pen = Win32.CreatePen(Win32.PS_SOLID, 1, Win32.Rgb(246, 246, 246));
+            IntPtr oldPen = Win32.SelectObject(hdc, pen);
+            Win32.RoundRect(hdc, rect.Left, rect.Top, rect.Right, rect.Bottom, radius, radius);
+            Win32.SelectObject(hdc, oldPen);
+            Win32.SelectObject(hdc, old);
+            Win32.DeleteObject(pen);
+        }
+
+        private void RoundBorder(IntPtr hdc, Win32.RECT rect, int radius, IntPtr brush)
+        {
+            IntPtr pen = Win32.CreatePen(Win32.PS_SOLID, 1, Win32.Rgb(214, 214, 214));
+            IntPtr oldPen = Win32.SelectObject(hdc, pen);
+            IntPtr oldBrush = Win32.SelectObject(hdc, Win32.GetStockObject(5 /*HOLLOW_BRUSH*/));
+            Win32.RoundRect(hdc, rect.Left, rect.Top, rect.Right, rect.Bottom, radius, radius);
+            Win32.SelectObject(hdc, oldBrush);
+            Win32.SelectObject(hdc, oldPen);
+            Win32.DeleteObject(pen);
         }
 
         private static Win32.RECT Rect(int left, int top, int right, int bottom)
@@ -674,16 +870,21 @@ namespace SinkLite.Tray
             return r;
         }
 
+        private static bool Contains(Win32.RECT r, int x, int y)
+        {
+            return x >= r.Left && x < r.Right && y >= r.Top && y < r.Bottom;
+        }
+
         private static int StateColor(SinkState state)
         {
             switch (state)
             {
-                case SinkState.Flowing: return Win32.Rgb(40, 170, 70);
-                case SinkState.LinkReady: return Win32.Rgb(40, 140, 220);
-                case SinkState.Armed: return Win32.Rgb(230, 170, 30);
+                case SinkState.Flowing: return Win32.Rgb(16, 150, 70);
+                case SinkState.LinkReady: return Win32.Rgb(0, 120, 215);
+                case SinkState.Armed: return Win32.Rgb(224, 150, 0);
                 case SinkState.Busy:
-                case SinkState.Backoff: return Win32.Rgb(240, 140, 40);
-                case SinkState.Faulted: return Win32.Rgb(210, 60, 60);
+                case SinkState.Backoff: return Win32.Rgb(230, 130, 30);
+                case SinkState.Faulted: return Win32.Rgb(200, 50, 50);
                 default: return Win32.Rgb(150, 150, 150);
             }
         }
@@ -693,11 +894,11 @@ namespace SinkLite.Tray
             switch (state)
             {
                 case SinkState.Idle: return "未连接";
-                case SinkState.Busy: return "正在连接…";
-                case SinkState.Armed: return "已就绪，等待手机发送音频";
-                case SinkState.LinkReady: return "音频链路已建立，等待播放";
-                case SinkState.Flowing: return "音频正在传输";
-                case SinkState.Backoff: return "连接失败，正在重试";
+                case SinkState.Busy: return "正在连接";
+                case SinkState.Armed: return "等待手机发送音频";
+                case SinkState.LinkReady: return "链路已建立";
+                case SinkState.Flowing: return "正在传输音频";
+                case SinkState.Backoff: return "重试中";
                 case SinkState.Faulted: return "连接失败";
                 default: return state.ToString();
             }
@@ -711,12 +912,18 @@ namespace SinkLite.Tray
                 Win32.DeleteObject(fontTitle);
                 Win32.DeleteObject(fontBody);
                 Win32.DeleteObject(fontSmall);
+                Win32.DeleteObject(fontCaption);
                 Win32.DeleteObject(brushBack);
-                Win32.DeleteObject(brushPanel);
+                Win32.DeleteObject(brushCard);
+                Win32.DeleteObject(brushBorder);
                 Win32.DeleteObject(brushAccent);
-                Win32.DeleteObject(brushButton);
-                Win32.DeleteObject(brushHover);
-                Win32.DeleteObject(brushSelect);
+                Win32.DeleteObject(brushAccentHover);
+                Win32.DeleteObject(brushAccentPress);
+                Win32.DeleteObject(brushBtn);
+                Win32.DeleteObject(brushBtnHover);
+                Win32.DeleteObject(brushBtnPress);
+                Win32.DeleteObject(brushRowHover);
+                Win32.DeleteObject(brushRowSelected);
             }
             catch
             {

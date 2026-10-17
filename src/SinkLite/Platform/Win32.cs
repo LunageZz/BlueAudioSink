@@ -22,6 +22,10 @@ namespace SinkLite.Platform
         public const int WM_RBUTTONUP = 0x0205;
         public const int WM_MOUSEMOVE = 0x0200;
         public const int WM_KEYDOWN = 0x0100;
+        public const int WM_MOUSELEAVE = 0x02A3;
+        public const int WM_SETCURSOR = 0x0020;
+        public const int IDC_HAND = 32649;
+        public const int TME_LEAVE = 0x00000002;
         public const int WM_APP = 0x8000;
 
         public const int WS_OVERLAPPED = 0x00000000;
@@ -57,6 +61,18 @@ namespace SinkLite.Platform
             public int X;
             public int Y;
         }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct TRACKMOUSEEVENT
+        {
+            public int cbSize;
+            public int dwFlags;
+            public IntPtr hwndTrack;
+            public int dwHoverTime;
+        }
+
+        [DllImport("user32.dll")]
+        public static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT track);
 
         [StructLayout(LayoutKind.Sequential)]
         public struct PAINTSTRUCT
@@ -241,6 +257,11 @@ namespace SinkLite.Platform
         public static extern IntPtr SelectObject(IntPtr hdc, IntPtr obj);
 
         [DllImport("gdi32.dll")]
+        public static extern IntPtr GetStockObject(int index);
+
+        public const int HOLLOW_BRUSH = 5;
+
+        [DllImport("gdi32.dll")]
         public static extern bool DeleteObject(IntPtr obj);
 
         [DllImport("gdi32.dll")]
@@ -248,6 +269,12 @@ namespace SinkLite.Platform
 
         [DllImport("gdi32.dll")]
         public static extern bool Rectangle(IntPtr hdc, int left, int top, int right, int bottom);
+
+        [DllImport("gdi32.dll")]
+        public static extern bool FrameRect(IntPtr hdc, ref RECT rect, IntPtr brush);
+
+        [DllImport("gdi32.dll")]
+        public static extern int SetBkColor(IntPtr hdc, int color);
 
         [DllImport("gdi32.dll")]
         public static extern bool Ellipse(IntPtr hdc, int left, int top, int right, int bottom);

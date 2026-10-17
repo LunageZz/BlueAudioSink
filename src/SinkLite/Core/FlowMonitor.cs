@@ -34,6 +34,14 @@ namespace SinkLite.Core
         private readonly EndpointWatcher watcher = new EndpointWatcher();
         private readonly Policy policy;
 
+        // 端点枚举涉及 COM 接口激活，成本远高于缓存后的峰值读表。
+        // 实测结论：枚举保留在每 5 个采样周期执行一次即可保证状态及时。
+        // 注册表枚举成本低（约 1~3 ms），但仍不必每秒做，10 个采样周期一次足够。
+        private const int EnumerateEverySamples = 10;
+        private int sampleCounter;
+        private System.Collections.Generic.IReadOnlyList<EndpointInfo> cachedEndpoints =
+            new System.Collections.Generic.List<EndpointInfo>();
+
         public FlowMonitor(Policy policy)
         {
             this.policy = policy;
@@ -42,13 +50,18 @@ namespace SinkLite.Core
         public FlowFinding Sample()
         {
             FlowFinding finding = new FlowFinding();
-            IReadOnlyList<EndpointInfo> endpoints = watcher.Sample();
+            bool enumerate = (sampleCounter++ % EnumerateEverySamples) == 0;
 
-            EndpointInfo bluetooth = endpoints.FirstOrDefault(e => e.IsBluetoothA2dp);
-            if (bluetooth != null)
+            if (enumerate)
+            {
+                cachedEndpoints = watcher.Sample();
+            }
+
+            string bluetoothName;
+            if (EndpointWatcher.HasBluetoothEndpoint(cachedEndpoints, out bluetoothName))
             {
                 finding.HasBluetoothEndpoint = true;
-                finding.BluetoothEndpointName = bluetooth.Name;
+                finding.BluetoothEndpointName = bluetoothName;
             }
 
             EndpointInfo render = watcher.GetDefaultRender();

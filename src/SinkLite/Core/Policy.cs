@@ -37,8 +37,11 @@ namespace SinkLite.Core
         /// <summary>有端点但长时间没有声音 -> 提示可能播到别的输出设备。</summary>
         public TimeSpan FlowWaitHintDelay { get; set; } = TimeSpan.FromSeconds(15);
 
-        /// <summary>主循环采样间隔（低频，避免无谓 CPU 占用）。</summary>
-        public TimeSpan SampleInterval { get; set; } = TimeSpan.FromSeconds(2);
+        /// <summary>
+        /// 主循环采样间隔。端点与表计接口已做长缓存，单次采样开销极低，
+        /// 因此 1 秒即可保持状态实时而不影响 UI 响应。
+        /// </summary>
+        public TimeSpan SampleInterval { get; set; } = TimeSpan.FromSeconds(1);
 
         /// <summary>峰值判定阈值，低于此值认为无声。</summary>
         public float PeakThreshold { get; set; } = 0.0005f;

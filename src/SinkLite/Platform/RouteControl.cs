@@ -37,10 +37,7 @@ namespace SinkLite.Platform
         /// <summary>挑选一个"真实"的渲染端点：优先物理设备，排除虚拟声卡。</summary>
         public EndpointInfo PickPhysicalRender()
         {
-            IReadOnlyList<EndpointInfo> all = watcher.Sample();
-            List<EndpointInfo> renders = all
-                .Where(e => e.IsRender && e.IsActive)
-                .ToList();
+            List<EndpointInfo> renders = EndpointRegistry.EnumerateActivePhysicalRenders();
 
             EndpointInfo physical = renders.FirstOrDefault(e => !e.IsVirtual && !e.IsBluetoothA2dp);
             if (physical != null)
@@ -51,18 +48,10 @@ namespace SinkLite.Platform
             return renders.FirstOrDefault(e => !e.IsVirtual);
         }
 
-        /// <summary>列出可选的物理输出端点（排除虚拟声卡与蓝牙回环端点）。</summary>
+        /// <summary>列出可选的物理输出端点。走注册表读取，避免 NAudio 枚举的句柄泄漏。</summary>
         public IReadOnlyList<EndpointInfo> ListPhysicalRenders()
         {
-            List<EndpointInfo> result = new List<EndpointInfo>();
-            foreach (EndpointInfo e in watcher.Sample())
-            {
-                if (e.IsRender && e.IsActive && !e.IsVirtual)
-                {
-                    result.Add(e);
-                }
-            }
-            return result;
+            return EndpointRegistry.EnumerateActivePhysicalRenders();
         }
 
         /// <summary>把默认多媒体/通信输出切换到指定端点。</summary>

@@ -6,6 +6,8 @@
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <!-- Per-Monitor V2 DPI 感知，避免高分屏上 UI 被系统拉伸而发糊 -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
     <RootNamespace>SinkLite</RootNamespace>

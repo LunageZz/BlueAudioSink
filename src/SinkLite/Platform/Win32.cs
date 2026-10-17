@@ -162,6 +162,37 @@ namespace SinkLite.Platform
         public static extern int GetClientRect(IntPtr hWnd, out RECT rect);
 
         [DllImport("user32.dll")]
+        public static extern uint GetDpiForWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern uint GetDpiForSystem();
+
+        [DllImport("user32.dll")]
+        public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
+
+        [DllImport("user32.dll")]
+        public static extern int FillRect(IntPtr hdc, ref RECT rect, IntPtr brush);
+
+        [DllImport("gdi32.dll")]
+        public static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+        [DllImport("gdi32.dll")]
+        public static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int width, int height);
+
+        [DllImport("gdi32.dll")]
+        public static extern bool BitBlt(
+            IntPtr dest, int x, int y, int width, int height,
+            IntPtr source, int srcX, int srcY, int rop);
+
+        [DllImport("gdi32.dll")]
+        public static extern bool DeleteDC(IntPtr hdc);
+
+        public const int SRCCOPY = 0x00CC0020;
+
+        /// <summary>Per-Monitor V2 DPI 感知上下文。</summary>
+        public static readonly IntPtr DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = new IntPtr(-4);
+
+        [DllImport("user32.dll")]
         public static extern IntPtr LoadCursor(IntPtr instance, int cursor);
 
         [DllImport("user32.dll")]
@@ -227,15 +258,17 @@ namespace SinkLite.Platform
         [DllImport("gdi32.dll")]
         public static extern int SetBkMode(IntPtr hdc, int mode);
 
-        [DllImport("gdi32.dll")]
+        // 必须显式声明 Unicode 字符集：否则 P/Invoke 会按 ANSI 调用，
+        // 字体名与文本会被错误转换，表现为界面文字发糊。
+        [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
         public static extern IntPtr CreateFontW(
             int height, int width, int escapement, int orientation, int weight,
             uint italic, uint underline, uint strikeOut, uint charSet,
             uint outPrecision, uint clipPrecision, uint quality, uint pitchAndFamily,
-            string faceName);
+            [MarshalAs(UnmanagedType.LPWStr)] string faceName);
 
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-        public static extern int DrawTextW(IntPtr hdc, string text, int length, ref RECT rect, int format);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "DrawTextW")]
+        public static extern int DrawText(IntPtr hdc, [MarshalAs(UnmanagedType.LPWStr)] string text, int length, ref RECT rect, int format);
 
         public const int SW_HIDE = 0;
         public const int SW_SHOW = 5;

@@ -280,11 +280,17 @@ namespace SinkLite
 
         private static void WaitForDevices(SinkController controller)
         {
-            DateTime deadline = DateTime.Now.AddSeconds(8);
+            // 只请求一次刷新并耐心等待，避免启动阶段反复枚举设备
+            if (controller.Devices.Count > 0)
+            {
+                return;
+            }
+
+            controller.RequestRefreshDevices();
+            DateTime deadline = DateTime.Now.AddSeconds(6);
             while (controller.Devices.Count == 0 && DateTime.Now < deadline)
             {
-                controller.RequestRefreshDevices();
-                Thread.Sleep(400);
+                Thread.Sleep(150);
             }
         }
     }

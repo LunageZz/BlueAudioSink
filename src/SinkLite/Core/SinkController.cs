@@ -54,6 +54,8 @@ namespace SinkLite.Core
         private DateTime lastDeviceScan;
         private DateTime lastRouteLock = DateTime.MinValue;
         private int routeLockAttempts;
+        private readonly EndpointWatcher renderWatcher = new EndpointWatcher();
+
         private string lastEndpointName;
         private string lastRenderName;
 
@@ -205,7 +207,8 @@ namespace SinkLite.Core
                 {
                     await DrainCommandsAsync();
 
-                    if (DateTime.Now - lastDeviceScan > TimeSpan.FromSeconds(30))
+                    // 设备列表变化很慢，不必频繁枚举：每次枚举都会产生大量 WinRT COM 对象。
+                    if (DateTime.Now - lastDeviceScan > TimeSpan.FromSeconds(120))
                     {
                         lastDeviceScan = DateTime.Now;
                         await RefreshDevicesAsync();
@@ -413,6 +416,7 @@ namespace SinkLite.Core
                     Task completed = await Task.WhenAny(armTask, Task.Delay(policy.ArmTimeout));
                     if (completed != armTask)
                     {
+                        await ReleaseAsync("arm timeout");
                         Fail("ArmTimeout", "武装接收通道超时");
                         return;
                     }
@@ -421,6 +425,7 @@ namespace SinkLite.Core
                 }
                 catch (Exception ex)
                 {
+                    await ReleaseAsync("arm exception");
                     Fail("ArmException", ex.Message);
                     return;
                 }
@@ -442,7 +447,11 @@ namespace SinkLite.Core
                     catch
                     {
                     }
-                    Fail("OpenTimeout", "打开连接超时");
+
+                    // 关键修复：被取消的 OpenAsync 会让连接对象进入不可恢复状态，
+                    // 继续复用它重试必然一直失败。必须丢弃，让下次重试重新创建并武装。
+                    await ReleaseAsync("open timeout");
+                    Fail("OpenTimeout", "打开连接超时（手机可能未响应）");
                     return;
                 }
 
@@ -450,20 +459,23 @@ namespace SinkLite.Core
             }
             catch (Exception ex)
             {
+                await ReleaseAsync("open exception");
                 Fail("OpenException", ex.Message);
                 return;
             }
 
             if (status != AudioPlaybackConnectionOpenResultStatus.Success)
             {
+                await ReleaseAsync("open status " + status);
                 Fail("OpenStatus." + status, "打开连接失败：" + status);
                 return;
             }
 
-            // 4) 稳定观察：过滤"秒断"。
-            await Task.Delay(policy.OpenStabilityDelay);
+            // 4) 稳定观察：给状态迁移留出余量，避免把"稍慢"误判为"秒断"。
+            await WaitForOpenedAsync(conn, policy.OpenStabilityDelay + TimeSpan.FromMilliseconds(1200));
             if (conn.State != AudioPlaybackConnectionState.Opened)
             {
+                await ReleaseAsync("not opened");
                 Fail("NotOpened", "连接未能保持打开状态");
                 return;
             }
@@ -477,8 +489,17 @@ namespace SinkLite.Core
             lastEndpointName = null;
             lastRenderName = null;
 
+            // 复用共享的端点观察器：之前每次 new EndpointWatcher() 都不释放，
+            // 是长时间运行后句柄/内存膨胀的主要来源之一。
             bool virtualWarning = false;
-            EndpointInfo render = new EndpointWatcher().GetDefaultRender();
+            EndpointInfo render = null;
+            try
+            {
+                render = renderWatcher.GetDefaultRender();
+            }
+            catch
+            {
+            }
             if (render != null && render.IsVirtual)
             {
                 virtualWarning = true;
@@ -498,6 +519,27 @@ namespace SinkLite.Core
             log.Info("Connect.Armed", ("device", target.Name), ("fresh", freshlyCreated));
         }
 
+        /// <summary>在超时内轮询等待连接进入 Opened，避免把稍慢的状态迁移误判为失败。</summary>
+        private static async Task WaitForOpenedAsync(AudioPlaybackConnection conn, TimeSpan timeout)
+        {
+            DateTime deadline = DateTime.Now + timeout;
+            while (DateTime.Now < deadline)
+            {
+                try
+                {
+                    if (conn.State == AudioPlaybackConnectionState.Opened)
+                    {
+                        return;
+                    }
+                }
+                catch
+                {
+                    return;
+                }
+                await Task.Delay(100);
+            }
+        }
+
         /// <summary>每个采样周期执行一次：端点归因、峰值判定、退避推进。</summary>
         private async Task StepAsync()
         {
@@ -514,9 +556,18 @@ namespace SinkLite.Core
             if (retryAt.HasValue && DateTime.Now >= retryAt.Value)
             {
                 retryAt = null;
-                SinkDevice target = Devices.FirstOrDefault(d => d.Id == armedDeviceId);
+
+                // 注意：失败时 ReleaseAsync 会把 armedDeviceId 清空（以便重建连接对象），
+                // 因此重试目标必须取自当前快照，否则会永远找不到设备、重试静默失效。
+                string retryId = !string.IsNullOrEmpty(armedDeviceId)
+                    ? armedDeviceId
+                    : Current.DeviceId;
+                SinkDevice target = string.IsNullOrEmpty(retryId)
+                    ? Devices.FirstOrDefault()
+                    : Devices.FirstOrDefault(d => d.Id == retryId);
                 if (target != null)
                 {
+                    log.Info("Connect.Retrying", ("device", target.Name), ("attempt", retryCount + 1));
                     await ConnectInternalAsync(target);
                     return;
                 }
@@ -670,9 +721,10 @@ namespace SinkLite.Core
             retryCount++;
             log.Warn("Connect.Failed", ("code", code), ("message", message), ("attempt", retryCount));
 
-            // 致命错误：不再重试，避免无意义拆连把手机端也拖乱。
-            bool fatal = code == "NotSupported" || code == "CreateException" || code.StartsWith("OpenStatus.");
-            int maxRetries = fatal ? Math.Min(policy.MaxRetries, 1) : policy.MaxRetries;
+            // 只有真正不可能成功的错误才限制重试次数。
+            // OpenStatus.UnknownFailure 等属于瞬时失败（手机忙、链路抖动），应当继续重试。
+            bool fatal = code == "NotSupported" || code == "CreateException";
+            int maxRetries = fatal ? 1 : policy.MaxRetries;
 
             if (retryCount <= maxRetries)
             {
@@ -776,6 +828,14 @@ namespace SinkLite.Core
             try
             {
                 flow.Dispose();
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                renderWatcher.Dispose();
             }
             catch
             {

@@ -6,142 +6,105 @@ using SinkLite.Core;
 namespace SinkLite.Platform
 {
     /// <summary>
-    /// 音频端点观察器。依据实测：手机 A2DP 端点只在链路真正建立时才出现，
-    /// 因此"端点是否出现"是判断链路层是否就绪的可靠信号。
-    /// 这里采用低频轮询（2 秒）而非 COM 回调：实现简单、稳定，CPU 开销可忽略。
+    /// 音频端点观察器。
+    ///
+    /// 分工（依据实测结论）：
+    ///   - 端点枚举走注册表（EndpointRegistry），完全不产生 COM 对象，避免句柄泄漏；
+    ///   - 默认渲染端点的峰值读表走 NAudio。只对同一个 MMDevice 反复读
+    ///     MasterPeakValue 不泄漏（实测 100 次句柄不变），
+    ///     但每次访问 AudioMeterInformation 属性都会泄漏一个 COM 引用，
+    ///     所以这里长期缓存 MMDevice 与 AudioMeterInformation。
     /// </summary>
     internal sealed class EndpointWatcher : IDisposable
     {
-        private static readonly string[] VirtualMarkers = new[]
-        {
-            "VB-Audio", "CABLE Input", "CABLE Output", "Steam Streaming",
-            "虚拟音频", "Nahimic", "WO Mic", "网易"
-        };
-
         private readonly MMDeviceEnumerator enumerator = new MMDeviceEnumerator();
 
-        public IReadOnlyList<EndpointInfo> LastEndpoints { get; private set; } = new List<EndpointInfo>();
+        private MMDevice defaultDevice;
+        private AudioMeterInformation defaultMeter;
+        private string defaultDeviceId;
 
+        /// <summary>枚举端点（注册表实现，零 COM 泄漏）。</summary>
         public IReadOnlyList<EndpointInfo> Sample()
         {
-            List<EndpointInfo> list = new List<EndpointInfo>(64);
-
-            foreach (DataFlow flow in new[] { DataFlow.Render, DataFlow.Capture })
-            {
-                MMDeviceCollection collection;
-                try
-                {
-                    collection = enumerator.EnumerateAudioEndPoints(flow, DeviceState.All);
-                }
-                catch
-                {
-                    continue;
-                }
-
-                foreach (MMDevice device in collection)
-                {
-                    EndpointInfo info = Describe(device, flow);
-                    if (info != null)
-                    {
-                        list.Add(info);
-                    }
-                }
-            }
-
-            LastEndpoints = list;
-            return list;
+            return EndpointRegistry.EnumerateAll();
         }
 
-        private static EndpointInfo Describe(MMDevice device, DataFlow flow)
+        /// <summary>仅从端点列表判断是否存在蓝牙端点，不做任何枚举。</summary>
+        public static bool HasBluetoothEndpoint(IReadOnlyList<EndpointInfo> endpoints, out string name)
         {
-            string id;
-            try
-            {
-                id = device.ID;
-            }
-            catch
-            {
-                return null;
-            }
-
-            string name;
-            try
-            {
-                name = device.FriendlyName;
-            }
-            catch
-            {
-                name = string.Empty;
-            }
-
-            bool active;
-            try
-            {
-                active = device.State == DeviceState.Active;
-            }
-            catch
-            {
-                active = false;
-            }
-
-            return new EndpointInfo
-            {
-                Id = id,
-                Name = name,
-                IsActive = active,
-                IsRender = flow == DataFlow.Render,
-                IsBluetoothA2dp =
-                    Contains(id, "BTHENUM") ||
-                    Contains(name, "A2DP") ||
-                    Contains(name, "A2dp"),
-                IsVirtual = ContainsAny(name, VirtualMarkers) || ContainsAny(id, VirtualMarkers)
-            };
-        }
-
-        private static bool Contains(string text, string token)
-        {
-            return !string.IsNullOrEmpty(text) &&
-                   text.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
-        private static bool ContainsAny(string text, string[] tokens)
-        {
-            if (string.IsNullOrEmpty(text))
+            name = null;
+            if (endpoints == null)
             {
                 return false;
             }
 
-            foreach (string token in tokens)
+            foreach (EndpointInfo e in endpoints)
             {
-                if (text.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
+                if (e.IsBluetoothA2dp)
                 {
+                    name = e.Name;
                     return true;
                 }
             }
             return false;
         }
 
-        /// <summary>读取默认多媒体渲染端点；失败返回 null。</summary>
-        public EndpointInfo GetDefaultRender()
-        {
-            try
-            {
-                MMDevice device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                return Describe(device, DataFlow.Render);
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        /// <summary>读取默认渲染端点的峰值电平；失败返回 -1。</summary>
+        /// <summary>读取默认渲染端点的峰值。命中缓存后近乎零成本且不泄漏。</summary>
         public float GetDefaultPeak()
         {
             try
             {
                 MMDevice device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                return device.AudioMeterInformation.MasterPeakValue;
+                if (device == null)
+                {
+                    return -1f;
+                }
+
+                string id;
+                try
+                {
+                    id = device.ID;
+                }
+                catch
+                {
+                    device.Dispose();
+                    return -1f;
+                }
+
+                if (defaultMeter == null ||
+                    !string.Equals(id, defaultDeviceId, StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        defaultMeter = null;
+                        if (defaultDevice != null)
+                        {
+                            defaultDevice.Dispose();
+                        }
+                    }
+                    catch
+                    {
+                    }
+
+                    defaultDevice = device;
+                    defaultDeviceId = id;
+                    try
+                    {
+                        defaultMeter = device.AudioMeterInformation;
+                    }
+                    catch
+                    {
+                        defaultMeter = null;
+                        return -1f;
+                    }
+                }
+                else
+                {
+                    // 未变化：释放临时对象，避免每秒一次泄漏
+                    device.Dispose();
+                }
+
+                return defaultMeter.MasterPeakValue;
             }
             catch
             {
@@ -149,10 +112,67 @@ namespace SinkLite.Platform
             }
         }
 
+        /// <summary>读取默认渲染端点信息：ID 取自 Core Audio，名称取自注册表。</summary>
+        public EndpointInfo GetDefaultRender()
+        {
+            string id;
+            try
+            {
+                MMDevice device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                if (device == null)
+                {
+                    return null;
+                }
+                id = device.ID;
+                device.Dispose();
+            }
+            catch
+            {
+                return null;
+            }
+
+            try
+            {
+                foreach (EndpointInfo e in EndpointRegistry.EnumerateActivePhysicalRenders())
+                {
+                    if (string.Equals(e.Id, id, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return e;
+                    }
+                }
+
+                // 默认端点可能是虚拟设备或非活动，回退到全量枚举
+                foreach (EndpointInfo e in EndpointRegistry.EnumerateAll())
+                {
+                    if (string.Equals(e.Id, id, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return e;
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            return new EndpointInfo
+            {
+                Id = id,
+                Name = id,
+                IsActive = true,
+                IsRender = true
+            };
+        }
+
         public void Dispose()
         {
             try
             {
+                defaultMeter = null;
+                if (defaultDevice != null)
+                {
+                    defaultDevice.Dispose();
+                    defaultDevice = null;
+                }
                 enumerator.Dispose();
             }
             catch

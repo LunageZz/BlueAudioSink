@@ -42,6 +42,7 @@ namespace SinkLite.Platform
                         options.ShowHelp = true;
                         break;
                     case "--tray":
+                        // 保留为兼容别名：现在启动即显示窗口，无托盘模式
                         break;
                     case "--console":
                         options.Console = true;
@@ -88,8 +89,7 @@ namespace SinkLite.Platform
                 "",
                 "用法：BlueAudioSink [选项]",
                 "",
-                "  （无参数）     启动托盘常驻（默认）",
-                "  --tray         启动托盘常驻，可开机自启",
+                "  （无参数）     启动主窗口（默认）",
                 "  --list         列出可接收的已配对设备后退出",
                 "  --connect      连接后进入监听并输出状态变化（Ctrl+C 退出）",
                 "  --diagnose [秒] 诊断模式：采样并输出三层归因（默认 30 秒）",

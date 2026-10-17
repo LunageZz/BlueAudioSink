@@ -47,7 +47,8 @@ namespace SinkLite.Platform
                         {
                             return false;
                         }
-                        key.SetValue(ValueName, "\"" + exe + "\" --tray");
+                        // 现在启动即显示主窗口，不再有托盘模式，因此不带参数。
+                        key.SetValue(ValueName, "\"" + exe + "\"");
                     }
                     else
                     {

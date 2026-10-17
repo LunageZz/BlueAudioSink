@@ -40,29 +40,32 @@ Idle → Busy → Armed(控制层就绪) → LinkReady(手机端点出现) → F
 | 控制层连接 | `OpenAsync` 返回 Success，约 1.9 秒，随即 `State` = Opened |
 | 手机未播放时 | 45 秒内峰值恒为 0，系统端点列表中**没有任何 A2DP 端点出现** |
 | 手机端点形态 | 只有在链路建立时才出现；未连接时全机 48 个端点中也没有 |
-| 发布体积 | **单文件 10.67 MB**，无 .NET 运行时依赖（旧 WinUI 版为 162.5 MB / 448 文件） |
-| 托盘常驻 | 工作集约 37 MB，空闲 CPU 接近 0% |
+| 发布体积 | **单文件 10.68 MB**，无 .NET 运行时依赖（旧 WinUI 版为 162.5 MB / 448 文件） |
+| 常驻窗口 | 工作集约 41 MB，空闲 CPU 接近 0% |
 
 ## 使用
 
 ```powershell
-# 托盘常驻（默认；双击 exe 也是这个模式，不会弹控制台窗口）
-.BlueAudioSink.exe
+# 启动主窗口（双击 exe 同样效果，不会弹控制台窗口）
+.\BlueAudioSink.exe
 
 # 只列出可接收的已配对设备
-.BlueAudioSink.exe --list
+.\BlueAudioSink.exe --list
 
 # 连接并实时打印状态（Ctrl+C 退出）
-.BlueAudioSink.exe --connect
+.\BlueAudioSink.exe --connect
 
 # 诊断：采样输出三层归因（默认 30 秒）
-.BlueAudioSink.exe --diagnose 30
+.\BlueAudioSink.exe --diagnose 30
 
-# 指定采样时长/查看帮助
-.BlueAudioSink.exe --help
+# 查看帮助
+.\BlueAudioSink.exe --help
 ```
 
-托盘右键菜单：连接/重连、断开、**切换输出到物理设备**、诊断、打开日志目录、开机自启开关、退出。
+主界面包含：状态显示、音频源选择、输出设备选择、连接/断开/刷新按钮，以及「设置」页。
+设置页提供：开机自启、启动时自动连接、打开日志目录。
+
+**关闭窗口即退出程序**（不再常驻托盘）。
 
 ### 排查"连上了没声音"
 
@@ -74,7 +77,7 @@ Idle → Busy → Armed(控制层就绪) → LinkReady(手机端点出现) → F
    - Windows「蓝牙和其他设备」中该设备的属性里，允许其连接用于音频。
 2. **状态到达 LinkReady 但仍听不到** → 音频被其他输出设备抢占了。
    本机有 5 个活动输出端点 + 3 个虚拟声卡，很容易被抢。
-   用托盘菜单的「切换输出到物理设备」，或手动到「设置 → 系统 → 声音」选择正确输出。
+   在主界面的「输出」下拉里直接选择正确的设备，或手动到「设置 → 系统 → 声音」选择。
 3. **状态到达 Flowing** → 音频确实到达电脑，问题在后续的播放链路。
 
 ## 构建
@@ -82,8 +85,8 @@ Idle → Busy → Armed(控制层就绪) → LinkReady(手机端点出现) → F
 需要 .NET 8 SDK（本项目在 VS 2022 17.14 + dotnet SDK 9.0.312 上验证）。
 
 ```powershell
-dotnet build .BlueAudioSink.sln -c Debug -p:Platform=x64
-dotnet publish .srcSinkLiteSinkLite.csproj -c Release -p:Platform=x64
+dotnet build .\BlueAudioSink.sln -c Debug -p:Platform=x64
+dotnet publish .\src\SinkLite\SinkLite.csproj -c Release -p:Platform=x64
 ```
 
 发布产物：`srcSinkLiteindRelease
@@ -134,7 +137,7 @@ src/SinkLite/
   Core/Policy.cs          全部可调参数（超时/退避/阈值）
   Core/SinkController.cs  四段状态机（连接对象持久化、禁止拆连重建）
   Core/FlowMonitor.cs     三层归因（控制层/链路层/音频层）
-  Tray/TrayHost.cs        托盘：Shell_NotifyIcon + 隐藏窗口
+  UI/MainWindow.cs        主窗口与设置页（Win32 + GDI 手绘）
   Platform/EndpointWatcher.cs  音频端点观察与峰值读取
   Platform/RouteControl.cs     默认输出端点切换、虚拟声卡识别
   Platform/Log.cs              滚动 JSONL 日志

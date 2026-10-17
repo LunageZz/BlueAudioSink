@@ -37,6 +37,7 @@ namespace SinkLite.Platform
         public const int WS_EX_TOOLWINDOW = 0x00000080;
 
         public const int DT_LEFT = 0x00000000;
+        public const int DT_RIGHT = 0x00000002;
         public const int DT_CENTER = 0x00000001;
         public const int DT_VCENTER = 0x00000004;
         public const int DT_SINGLELINE = 0x00000020;

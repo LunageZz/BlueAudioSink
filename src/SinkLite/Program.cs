@@ -99,7 +99,7 @@ namespace SinkLite
                     return RunConnected(controller);
                 }
 
-                return RunTray(controller, options);
+                return RunWindow(controller, options);
             }
         }
 
@@ -214,7 +214,7 @@ namespace SinkLite
             return 0;
         }
 
-        private static int RunTray(SinkController controller, CliOptions options)
+        private static int RunWindow(SinkController controller, CliOptions options)
         {
             WaitForDevices(controller);
 
@@ -229,53 +229,34 @@ namespace SinkLite
                     log.Info("Route.LockArgument", ("requested", options.LockOutputName), ("matched", hit ?? "(未命中)"));
                 }
 
-                using (SinkLite.Tray.TrayHost host = new SinkLite.Tray.TrayHost(controller, route, log))
-                using (SinkLite.Tray.UiHost ui = new SinkLite.Tray.UiHost(controller, host, log))
+                using (SinkLite.UI.MainWindow window = new SinkLite.UI.MainWindow(controller, log))
                 {
-                    host.Ui = ui;
-                    host.Create();
-                    ui.Create();
-                    log.Info("Tray.Starting", ("devices", controller.Devices.Count));
+                    window.Create();
+                    log.Info("Window.Starting", ("devices", controller.Devices.Count));
 
                     Settings settings = Settings.Load();
                     if (settings.AutoConnect)
                     {
                         string target = string.IsNullOrEmpty(settings.DeviceId) ? null : settings.DeviceId;
                         controller.RequestConnect(target);
-                        log.Info("Tray.AutoConnectRequested", ("device", string.IsNullOrEmpty(target) ? "(第一个可用)" : target));
+                        log.Info("Window.AutoConnectRequested", ("device", string.IsNullOrEmpty(target) ? "(第一个可用)" : target));
                     }
 
-                    // 启动即显示主界面。
-                    ui.ShowWindow();
-                    MessageLoop.Run(host);
+                    window.ShowWindow();
+
+                    // 标准消息循环：窗口即全部界面，不再有托盘窗口需要分发
+                    Win32.MSG msg;
+                    while (Win32.GetMessage(out msg, IntPtr.Zero, 0, 0) > 0)
+                    {
+                        Win32.TranslateMessage(ref msg);
+                        Win32.DispatchMessage(ref msg);
+                    }
+
                     log.Info("App.Exited");
                 }
             }
 
             return 0;
-        }
-
-        /// <summary>
-        /// 统一消息循环：托盘隐藏窗口与主窗口共用，逐个分发各自的消息。
-        /// 所有 WinRT 调用都在后台线程，UI 与消息处理都在本线程，避免跨线程问题。
-        /// </summary>
-        private static class MessageLoop
-        {
-            public static void Run(SinkLite.Tray.TrayHost tray)
-            {
-                Win32.MSG msg;
-                while (Win32.GetMessage(out msg, IntPtr.Zero, 0, 0) > 0)
-                {
-                    if (tray.Handle != IntPtr.Zero && msg.hwnd == tray.Handle)
-                    {
-                        tray.Dispatch(ref msg);
-                        continue;
-                    }
-
-                    Win32.TranslateMessage(ref msg);
-                    Win32.DispatchMessage(ref msg);
-                }
-            }
         }
 
         private static void WaitForDevices(SinkController controller)

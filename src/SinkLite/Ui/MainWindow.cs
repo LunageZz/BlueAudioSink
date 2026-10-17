@@ -28,7 +28,7 @@ namespace SinkLite.UI
         private const int DeviceRowHeight = 32;
         private const int DropdownRowHeight = 32;
         private const int ButtonHeight = 36;
-        private const int SettingRowHeight = 46;
+        private const int SettingRowHeight = 58;
 
         private const int AreaNone = -1;
         private const int AreaConnect = 1;
@@ -63,6 +63,8 @@ namespace SinkLite.UI
         private IntPtr brushBtnPress;
         private IntPtr brushRowHover;
         private IntPtr brushRowSelected;
+        private IntPtr brushSwitchOff;
+        private IntPtr brushSwitchOffHover;
 
         private double scale = 1.0;
         private bool mouseInside;
@@ -146,8 +148,10 @@ namespace SinkLite.UI
             brushBtn = Win32.CreateSolidBrush(Win32.Rgb(255, 255, 255));
             brushBtnHover = Win32.CreateSolidBrush(Win32.Rgb(232, 240, 250));
             brushBtnPress = Win32.CreateSolidBrush(Win32.Rgb(206, 222, 240));
-            brushRowHover = Win32.CreateSolidBrush(Win32.Rgb(245, 245, 245));
+            brushRowHover = Win32.CreateSolidBrush(Win32.Rgb(238, 238, 238));
             brushRowSelected = Win32.CreateSolidBrush(Win32.Rgb(229, 241, 251));
+            brushSwitchOff = Win32.CreateSolidBrush(Win32.Rgb(196, 196, 196));
+            brushSwitchOffHover = Win32.CreateSolidBrush(Win32.Rgb(168, 168, 168));
 
             fontTitle = Win32.CreateFontW(-S(20), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
             fontBody = Win32.CreateFontW(-S(14), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
@@ -276,6 +280,7 @@ namespace SinkLite.UI
             public Win32.RECT SettingsRect;
             public Win32.RECT OutputRect;
             public Win32.RECT BackRect;
+            public Win32.RECT LogsButtonRect;
             public int SettingRowsTop;
         }
 
@@ -328,7 +333,10 @@ namespace SinkLite.UI
 
             int backWidth = S(76);
             m.BackRect = Rect(m.Left, S(18), m.Left + backWidth, S(18) + S(32));
-            m.SettingRowsTop = S(96);
+            m.SettingRowsTop = S(92);
+
+            int logsTop = m.SettingRowsTop + S(SettingRowHeight) * 2 + S(14);
+            m.LogsButtonRect = Rect(m.Left, logsTop, m.Left + S(160), logsTop + S(36));
 
             return m;
         }
@@ -363,9 +371,14 @@ namespace SinkLite.UI
                     return AreaBack;
                 }
 
+                if (Contains(m.LogsButtonRect, x, y))
+                {
+                    return AreaOpenLogs;
+                }
+
                 int rowsTop = m.SettingRowsTop;
                 if (x >= m.Left && x <= m.Left + m.ContentWidth &&
-                    y >= rowsTop && y < rowsTop + S(SettingRowHeight) * 3)
+                    y >= rowsTop && y < rowsTop + S(SettingRowHeight) * 2)
                 {
                     int index = (y - rowsTop) / S(SettingRowHeight);
                     return AreaAutoStart + index;
@@ -854,10 +867,12 @@ namespace SinkLite.UI
             DrawButton(hdc, m.SettingsRect, "设置", AreaSettings, false);
         }
 
-        /// <summary>设置页：开机自启、启动自动连接、打开日志目录。</summary>
+        /// <summary>
+        /// 设置页。开关类功能用经典划钮（左=关，右=开，开启时槽变主色），
+        /// 不再做成“可点进下一级”的列表项。
+        /// </summary>
         private void DrawSettings(IntPtr hdc, Metrics m)
         {
-            // 返回按钮
             DrawButton(hdc, m.BackRect, "← 返回", AreaBack, false);
 
             IntPtr oldFont = Win32.SelectObject(hdc, fontTitle);
@@ -870,14 +885,16 @@ namespace SinkLite.UI
             bool autoStart = AutoStart.IsEnabled();
             Settings settings = Settings.Load();
 
-            DrawSettingRow(hdc, m, 0, AreaAutoStart, "开机自启", autoStart ? "已开启" : "已关闭");
-            DrawSettingRow(hdc, m, 1, AreaAutoConnect, "启动时自动连接", settings.AutoConnect ? "已开启" : "已关闭");
-            DrawSettingRow(hdc, m, 2, AreaOpenLogs, "打开日志目录", "");
+            DrawSwitchRow(hdc, m, 0, AreaAutoStart, "开机自启", autoStart);
+            DrawSwitchRow(hdc, m, 1, AreaAutoConnect, "启动时自动连接", settings.AutoConnect);
 
-            // 底部信息：版本与日志路径
+            // 动作项：日志目录
+            DrawButton(hdc, m.LogsButtonRect, "打开日志目录", AreaOpenLogs, false);
+
+            // 底部信息
             Win32.SelectObject(hdc, fontSmall);
             Win32.SetTextColor(hdc, Win32.Rgb(140, 140, 140));
-            int infoTop = m.SettingRowsTop + S(SettingRowHeight) * 3 + S(18);
+            int infoTop = m.LogsButtonRect.Bottom + S(22);
             Win32.RECT versionRect = Rect(m.Left, infoTop, m.Left + m.ContentWidth, infoTop + S(20));
             Win32.DrawText(hdc, "BlueAudioSink 0.1.0", -1, ref versionRect,
                 Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE);
@@ -887,28 +904,67 @@ namespace SinkLite.UI
                 Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
         }
 
-        private void DrawSettingRow(IntPtr hdc, Metrics m, int index, int area, string label, string value)
+        /// <summary>一行设置：左侧名称，右侧划钮。整行可点击切换。</summary>
+        private void DrawSwitchRow(IntPtr hdc, Metrics m, int index, int area, string label, bool on)
         {
             int top = m.SettingRowsTop + index * S(SettingRowHeight);
-            Win32.RECT row = Rect(m.Left, top, m.Left + m.ContentWidth, top + S(SettingRowHeight) - S(4));
+            Win32.RECT row = Rect(m.Left, top, m.Left + m.ContentWidth, top + S(SettingRowHeight));
 
             bool hover = hoverArea == area;
-            bool pressed = pressedArea == area;
-            RoundFill(hdc, row, S(8), pressed ? brushBtnPress : (hover ? brushBtnHover : brushCard));
-            RoundBorder(hdc, row, S(8), hover ? brushAccent : brushBorder);
+            if (hover)
+            {
+                Win32.RECT inner = Rect(row.Left + S(2), row.Top + S(2), row.Right - S(2), row.Bottom - S(2));
+                RoundFill(hdc, inner, S(8), brushRowHover);
+            }
 
             Win32.SelectObject(hdc, fontBody);
             Win32.SetTextColor(hdc, Win32.Rgb(32, 32, 32));
-            Win32.RECT labelRect = Rect(row.Left + S(14), row.Top, row.Right - S(90), row.Bottom);
+            Win32.RECT labelRect = Rect(row.Left + S(10), row.Top, row.Right - S(72), row.Bottom);
             Win32.DrawText(hdc, label, -1, ref labelRect,
                 Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
 
-            Win32.SelectObject(hdc, fontSmall);
-            Win32.SetTextColor(hdc, Win32.Rgb(118, 118, 118));
-            Win32.RECT valueRect = Rect(row.Right - S(96), row.Top, row.Right - S(14), row.Bottom);
-            string text = string.IsNullOrEmpty(value) ? "›" : value + "  ›";
-            Win32.DrawText(hdc, text, -1, ref valueRect,
-                Win32.DT_RIGHT | Win32.DT_VCENTER | Win32.DT_SINGLELINE);
+            DrawSwitch(hdc, row.Right - S(12), (row.Top + row.Bottom) / 2, on, hover);
+        }
+
+        /// <summary>经典划钮：关闭时滑块在左且槽为灰色，开启时滑块在右且槽为主色。</summary>
+        private void DrawSwitch(IntPtr hdc, int right, int centerY, bool on, bool hover)
+        {
+            int trackWidth = S(44);
+            int trackHeight = S(24);
+            int knobSize = S(18);
+            int padding = S(3);
+
+            int left = right - trackWidth;
+            int top = centerY - trackHeight / 2;
+
+            Win32.RECT track = Rect(left, top, left + trackWidth, top + trackHeight);
+            IntPtr trackBrush;
+            if (on)
+            {
+                trackBrush = hover ? brushAccentHover : brushAccent;
+            }
+            else
+            {
+                trackBrush = hover ? brushSwitchOffHover : brushSwitchOff;
+            }
+
+            RoundFill(hdc, track, trackHeight / 2, trackBrush);
+
+            int knobLeft = on
+                ? left + trackWidth - padding - knobSize
+                : left + padding;
+            Win32.RECT knob = Rect(knobLeft, top + padding,
+                knobLeft + knobSize, top + padding + knobSize);
+
+            IntPtr knobBrush = Win32.CreateSolidBrush(Win32.Rgb(255, 255, 255));
+            IntPtr old = Win32.SelectObject(hdc, knobBrush);
+            IntPtr pen = Win32.CreatePen(Win32.PS_SOLID, 1, Win32.Rgb(255, 255, 255));
+            IntPtr oldPen = Win32.SelectObject(hdc, pen);
+            Win32.Ellipse(hdc, knob.Left, knob.Top, knob.Right, knob.Bottom);
+            Win32.SelectObject(hdc, oldPen);
+            Win32.SelectObject(hdc, old);
+            Win32.DeleteObject(pen);
+            Win32.DeleteObject(knobBrush);
         }
 
         private void DrawButton(IntPtr hdc, Win32.RECT rect, string text, int area, bool primary)
@@ -1043,6 +1099,8 @@ namespace SinkLite.UI
                 Win32.DeleteObject(brushBtnPress);
                 Win32.DeleteObject(brushRowHover);
                 Win32.DeleteObject(brushRowSelected);
+                Win32.DeleteObject(brushSwitchOff);
+                Win32.DeleteObject(brushSwitchOffHover);
             }
             catch
             {

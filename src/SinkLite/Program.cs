@@ -279,15 +279,14 @@ namespace SinkLite
 
     internal static class WinRtCompat
     {
+        /// <summary>
+        /// 轻量预热 WinRT。刻意不再调用 GetDeviceSelector()：
+        /// 实测它会连带加载 windows.storage.dll（约 9 MB 工作集），
+        /// 而设备 ID 现已由注册表构造，不再需要设备选择器。
+        /// </summary>
         public static void Initialize()
         {
-            try
-            {
-                Windows.Media.Audio.AudioPlaybackConnection.GetDeviceSelector();
-            }
-            catch
-            {
-            }
+            // 实际初始化发生在后台线程首次调用 WinRT 时（线程池为 MTA）。
         }
     }
 }

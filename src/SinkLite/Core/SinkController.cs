@@ -265,8 +265,13 @@ namespace SinkLite.Core
         {
             try
             {
+                // 使用官方设备枚举：它给出的 ID 与名称最可靠。
+                // 曾尝试改为注册表构造 ID 以省掉 windows.storage.dll，
+                // 实测该 DLL 由 Windows.Media.Audio 本身固有加载，改用注册表并无收益，
+                // 且注册表里的名称是间接字符串（会丢失自定义前缀），故保留官方方式。
                 string selector = AudioPlaybackConnection.GetDeviceSelector();
                 DeviceInformationCollection found = await DeviceInformation.FindAllAsync(selector);
+
                 List<SinkDevice> list = new List<SinkDevice>();
                 foreach (DeviceInformation info in found)
                 {
@@ -279,7 +284,6 @@ namespace SinkLite.Core
                 }
 
                 devicesEnumerated = list.Count > 0;
-                log.Info("Devices.Enumerated", ("count", list.Count));
 
                 if (list.Count > 0 && string.IsNullOrEmpty(SnapshotDeviceId))
                 {
@@ -290,6 +294,8 @@ namespace SinkLite.Core
                         s.Detail = "已发现设备，可连接";
                     });
                 }
+
+                log.Info("Devices.Enumerated", ("count", list.Count));
             }
             catch (Exception ex)
             {
@@ -466,8 +472,10 @@ namespace SinkLite.Core
 
             if (status != AudioPlaybackConnectionOpenResultStatus.Success)
             {
-                await ReleaseAsync("open status " + status);
-                Fail("OpenStatus." + status, "打开连接失败：" + status);
+                // 关键：这类失败不是超时，连接对象没有被 Cancel 污染，仍可复用。
+                // 若在这里 Dispose 并重建，就会形成每 2~8 秒一次的“拆-建”循环，
+                // 反而持续把手机侧的 A2DP 链路搞乱，导致每次都立刻失败。
+                Fail("OpenStatus." + status, "打开连接失败：" + status, true);
                 return;
             }
 
@@ -475,8 +483,8 @@ namespace SinkLite.Core
             await WaitForOpenedAsync(conn, policy.OpenStabilityDelay + TimeSpan.FromMilliseconds(1200));
             if (conn.State != AudioPlaybackConnectionState.Opened)
             {
-                await ReleaseAsync("not opened");
-                Fail("NotOpened", "连接未能保持打开状态");
+                // 同上：状态未就绪不等于对象损坏，保留对象稍后重试
+                Fail("NotOpened", "连接未能保持打开状态", true);
                 return;
             }
 
@@ -742,7 +750,11 @@ namespace SinkLite.Core
             }
         }
 
-        private void Fail(string code, string message)
+        /// <param name="keepConnection">
+        /// 为 true 时保留已武装的连接对象，仅退避后重试 OpenAsync；
+        /// 用于非超时类失败（对象未被 Cancel 污染），避免拆-建循环。
+        /// </param>
+        private void Fail(string code, string message, bool keepConnection = false)
         {
             retryCount++;
             log.Warn("Connect.Failed", ("code", code), ("message", message), ("attempt", retryCount));
@@ -756,6 +768,9 @@ namespace SinkLite.Core
             {
                 int index = Math.Min(retryCount - 1, policy.BackoffSteps.Length - 1);
                 TimeSpan delay = policy.BackoffSteps[index];
+
+                // 若 keepConnection 为 true，连接对象保持非空且 armedDeviceId 未清空，
+                // 重试时 ConnectInternalAsync 会走“复用已有对象”分支，不再重新武装。
                 retryAt = DateTime.Now + delay;
                 SetSnapshot(s =>
                 {
@@ -769,6 +784,20 @@ namespace SinkLite.Core
             }
 
             // 重试耗尽：转为待机，把发起权交还手机与 Windows 自动连接，而不是死循环重连。
+            // 此时才真正释放连接对象，避免留下僵死链路。
+            try
+            {
+                if (connection != null)
+                {
+                    connection.Dispose();
+                    connection = null;
+                    armedDeviceId = null;
+                }
+            }
+            catch
+            {
+            }
+
             wantConnected = false;
             retryAt = null;
             SetSnapshot(s =>
@@ -788,6 +817,14 @@ namespace SinkLite.Core
 
         private static string BuildHint(string code, string message)
         {
+            if (code.StartsWith("OpenStatus.", StringComparison.Ordinal))
+            {
+                // 实测：UnknownFailure 会在数毫秒内由本地立即返回，
+                // 此时电脑侧蓝牙正常、手机也已配对，问题在手机没有接受音频连接请求。
+                return "电脑侧正常，是手机没有接受音频连接。请在手机上：① 关闭再打开蓝牙；" +
+                       "② 在已配对列表中点一下本电脑重新连接；③ 仍不行则删除配对后重新配对。";
+            }
+
             switch (code)
             {
                 case "OpenTimeout":
@@ -796,8 +833,10 @@ namespace SinkLite.Core
                     return "蓝牙栈无响应。可尝试重新开关电脑蓝牙后重试。";
                 case "NotSupported":
                     return "该设备不支持蓝牙音频接收，请换用已配对的手机。";
+                case "NotOpened":
+                    return "音频通道未建立。请确认手机正在播放，并在手机上把音频输出指向本电脑。";
                 default:
-                    return "请确认手机在附近且蓝牙已开启；若反复失败，请重启电脑蓝牙适配器。错误：" + code;
+                    return "请确认手机在附近且蓝牙已开启。错误：" + code;
             }
         }
 

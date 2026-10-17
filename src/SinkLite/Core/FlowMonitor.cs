@@ -8,7 +8,11 @@ namespace SinkLite.Core
     /// <summary>三层归因结果：控制层 / 链路层 / 音频层。</summary>
     internal sealed class FlowFinding
     {
+        /// <summary>存在处于 Active 状态的蓝牙音频端点，说明音频链路已真正激活。</summary>
         public bool HasBluetoothEndpoint { get; set; }
+
+        /// <summary>只是检测到蓝牙音频设备条目（可能未激活），不能据此判断音频就绪。</summary>
+        public bool BluetoothEndpointPresent { get; set; }
 
         public string BluetoothEndpointName { get; set; }
 
@@ -57,11 +61,22 @@ namespace SinkLite.Core
                 cachedEndpoints = watcher.Sample();
             }
 
-            string bluetoothName;
-            if (EndpointWatcher.HasBluetoothEndpoint(cachedEndpoints, out bluetoothName))
+            // 关键：只有 DeviceState == Active 的蓝牙端点才代表音频链路已激活。
+            // 注册表里 state=8（Unplugged）的条目只是“设备存在过”，不代表有音频流。
+            foreach (EndpointInfo e in cachedEndpoints)
             {
-                finding.HasBluetoothEndpoint = true;
-                finding.BluetoothEndpointName = bluetoothName;
+                if (!e.IsBluetoothA2dp)
+                {
+                    continue;
+                }
+
+                finding.BluetoothEndpointPresent = true;
+                finding.BluetoothEndpointName = e.Name;
+                if (e.IsActive)
+                {
+                    finding.HasBluetoothEndpoint = true;
+                    break;
+                }
             }
 
             EndpointInfo render = watcher.GetDefaultRender();

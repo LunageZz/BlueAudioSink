@@ -652,7 +652,24 @@ namespace SinkLite.Core
                 return;
             }
 
-            // 已就绪但没有端点：这正是原方案显示"已连接"却无声的真实状态。
+            // 没有激活的音频端点：手机尚未真正开始发送音频。
+            // 注意这里必须区分“设备存在但未激活”与“完全没有设备”，否则会误导用户。
+            bool presentButInactive = finding.BluetoothEndpointPresent;
+
+            if (Current.State == SinkState.LinkReady)
+            {
+                // 之前判定为链路就绪，但端点已不再 Active，退回等待状态
+                SetSnapshot(s =>
+                {
+                    s.State = SinkState.Armed;
+                    s.Detail = "等待手机发送音频";
+                    s.Hint = "检测到手机音频设备，但音频通道未激活。请在手机上播放音乐。";
+                });
+                log.Info("Link.Inactive", ("endpoint", finding.BluetoothEndpointName));
+                linkHinted = false;
+                return;
+            }
+
             if (!linkHinted &&
                 armedAt.HasValue &&
                 DateTime.Now - armedAt.Value > policy.LinkWaitHintDelay)
@@ -661,10 +678,16 @@ namespace SinkLite.Core
                 SetSnapshot(s =>
                 {
                     s.State = SinkState.Armed;
-                    s.Detail = "控制层已就绪，手机尚未发送音频";
-                    s.Hint = "请确认：① 手机正在播放；② 手机蓝牙输出指向本机；③ Windows 蓝牙设备属性允许该设备连接用于音频。";
+                    s.Detail = presentButInactive
+                        ? "已检测到手机音频设备，但未激活"
+                        : "手机尚未发送音频";
+                    s.Hint = presentButInactive
+                        ? "请在手机上播放音乐，并确认手机的音频输出指向本机（而不是手机扬声器或其他耳机）。"
+                        : "请确认：① 手机正在播放；② 手机蓝牙输出指向本机；③ Windows 蓝牙设置中允许该设备用于音频。";
                 });
-                log.Warn("Link.WaitingForPhone", ("armedFor", (DateTime.Now - armedAt.Value).TotalSeconds));
+                log.Warn("Link.WaitingForPhone",
+                    ("armedFor", (DateTime.Now - armedAt.Value).TotalSeconds),
+                    ("present", presentButInactive));
             }
         }
 

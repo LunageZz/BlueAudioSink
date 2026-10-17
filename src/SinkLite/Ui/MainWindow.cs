@@ -121,6 +121,8 @@ namespace SinkLite.UI
             wc.lpfnWndProc = System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(wndProc);
             wc.hInstance = instance;
             wc.hCursor = Win32.LoadCursor(IntPtr.Zero, Win32.IDC_ARROW);
+            wc.hIcon = LoadAppIcon();
+            wc.hIconSm = LoadAppIcon();
             wc.lpszClassName = "BlueAudioSinkMainWindow";
             Win32.RegisterClassEx(ref wc);
 
@@ -135,6 +137,39 @@ namespace SinkLite.UI
             Win32.SetTimer(hwnd, new IntPtr(IdTimer), 1000, IntPtr.Zero);
             controller.SnapshotChanged += OnSnapshotChanged;
             log.Info("Ui.Created", ("dpi", (int)dpi), ("scale", scale));
+        }
+
+        /// <summary>从嵌入资源加载窗口图标，避免额外文件依赖。</summary>
+        private static IntPtr LoadAppIcon()
+        {
+            try
+            {
+                using (Stream stream = typeof(MainWindow).Assembly.GetManifestResourceStream("app.ico"))
+                {
+                    if (stream == null)
+                    {
+                        return IntPtr.Zero;
+                    }
+
+                    byte[] data = new byte[stream.Length];
+                    int read = 0;
+                    while (read < data.Length)
+                    {
+                        int n = stream.Read(data, read, data.Length - read);
+                        if (n <= 0)
+                        {
+                            break;
+                        }
+                        read += n;
+                    }
+
+                    return Win32.CreateIconFromResourceEx(data, (uint)read, true, 0x00030000u, 32, 32, 0u);
+                }
+            }
+            catch
+            {
+                return IntPtr.Zero;
+            }
         }
 
         private void CreateGdiObjects()

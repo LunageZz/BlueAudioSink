@@ -23,10 +23,35 @@ namespace SinkLite.Platform
         private AudioMeterInformation defaultMeter;
         private string defaultDeviceId;
 
-        /// <summary>枚举端点（注册表实现，零 COM 泄漏）。</summary>
+        // 端点列表缓存：注册表枚举虽便宜，但每秒做两次仍会产生可观的对象分配。
+        private IReadOnlyList<EndpointInfo> cachedEndpoints;
+        private DateTime cachedEndpointsAt = DateTime.MinValue;
+
+        // 默认端点 ID 也缓存：NAudio 查询需要激活 COM 对象（约 14 ms）。
+        private string cachedDefaultId;
+        private DateTime cachedDefaultIdAt = DateTime.MinValue;
+
+        private static readonly TimeSpan EndpointCacheLifetime = TimeSpan.FromSeconds(10);
+        private static readonly TimeSpan DefaultIdCacheLifetime = TimeSpan.FromSeconds(3);
+
+        /// <summary>强制枚举端点并刷新缓存（注册表实现，零 COM 泄漏）。</summary>
         public IReadOnlyList<EndpointInfo> Sample()
         {
-            return EndpointRegistry.EnumerateAll();
+            cachedEndpoints = EndpointRegistry.EnumerateAll();
+            cachedEndpointsAt = DateTime.Now;
+            return cachedEndpoints;
+        }
+
+        /// <summary>取端点列表，命中缓存则不枚举。</summary>
+        private IReadOnlyList<EndpointInfo> GetEndpointsCached()
+        {
+            if (cachedEndpoints == null ||
+                DateTime.Now - cachedEndpointsAt > EndpointCacheLifetime)
+            {
+                cachedEndpoints = EndpointRegistry.EnumerateAll();
+                cachedEndpointsAt = DateTime.Now;
+            }
+            return cachedEndpoints;
         }
 
         /// <summary>仅从端点列表判断是否存在蓝牙端点，不做任何枚举。</summary>
@@ -112,37 +137,22 @@ namespace SinkLite.Platform
             }
         }
 
-        /// <summary>读取默认渲染端点信息：ID 取自 Core Audio，名称取自注册表。</summary>
+        /// <summary>
+        /// 读取默认渲染端点信息。
+        /// 关键优化：端点列表与默认端点 ID 都走缓存，
+        /// 避免每秒触发两次注册表全量枚举（每次约创建 48 个对象）。
+        /// </summary>
         public EndpointInfo GetDefaultRender()
         {
-            string id;
-            try
-            {
-                MMDevice device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                if (device == null)
-                {
-                    return null;
-                }
-                id = device.ID;
-                device.Dispose();
-            }
-            catch
+            string id = GetDefaultIdCached();
+            if (id == null)
             {
                 return null;
             }
 
             try
             {
-                foreach (EndpointInfo e in EndpointRegistry.EnumerateActivePhysicalRenders())
-                {
-                    if (string.Equals(e.Id, id, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return e;
-                    }
-                }
-
-                // 默认端点可能是虚拟设备或非活动，回退到全量枚举
-                foreach (EndpointInfo e in EndpointRegistry.EnumerateAll())
+                foreach (EndpointInfo e in GetEndpointsCached())
                 {
                     if (string.Equals(e.Id, id, StringComparison.OrdinalIgnoreCase))
                     {
@@ -161,6 +171,33 @@ namespace SinkLite.Platform
                 IsActive = true,
                 IsRender = true
             };
+        }
+
+        private string GetDefaultIdCached()
+        {
+            if (cachedDefaultId != null &&
+                DateTime.Now - cachedDefaultIdAt <= DefaultIdCacheLifetime)
+            {
+                return cachedDefaultId;
+            }
+
+            try
+            {
+                MMDevice device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                if (device == null)
+                {
+                    return null;
+                }
+
+                cachedDefaultId = device.ID;
+                cachedDefaultIdAt = DateTime.Now;
+                device.Dispose();
+                return cachedDefaultId;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         public void Dispose()

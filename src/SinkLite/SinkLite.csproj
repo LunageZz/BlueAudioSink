@@ -28,6 +28,7 @@
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <Version>0.1.0</Version>
+    <ApplicationIcon>Assets\green.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <!-- 只引用 Wasapi 子包：NAudio 主包会连带 NAudio.WinForms，
@@ -40,11 +41,9 @@
     Microsoft.WindowsDesktop.App（WPF）拖进发布产物，实测体积 10 MB -> 44 MB。
   -->
   <ItemGroup>
-    <EmbeddedResource Include="Assets\gray.ico" LogicalName="dot.gray.ico" />
-    <EmbeddedResource Include="Assets\yellow.ico" LogicalName="dot.yellow.ico" />
-    <EmbeddedResource Include="Assets\blue.ico" LogicalName="dot.blue.ico" />
-    <EmbeddedResource Include="Assets\green.ico" LogicalName="dot.green.ico" />
-    <EmbeddedResource Include="Assets\red.ico" LogicalName="dot.red.ico" />
+    <!-- 只保留一个图标：用作窗口与任务栏图标。
+         托盘已移除，其余状态色图标不再需要。 -->
+    <EmbeddedResource Include="Assets\green.ico" LogicalName="app.ico" />
   </ItemGroup>
   <!--
     发布后把子系统改为 WINDOWS，使双击启动不出现控制台窗口。

@@ -51,9 +51,21 @@ namespace SinkLite.Core
             this.policy = policy;
         }
 
+        private readonly FlowFinding reusable = new FlowFinding();
+
+        /// <summary>复用同一个结果对象，避免每秒一次的采样都分配新对象。</summary>
         public FlowFinding Sample()
         {
-            FlowFinding finding = new FlowFinding();
+            FlowFinding finding = reusable;
+            finding.HasBluetoothEndpoint = false;
+            finding.BluetoothEndpointPresent = false;
+            finding.BluetoothEndpointName = null;
+            finding.Peak = 0f;
+            finding.RenderEndpointName = null;
+            finding.RenderEndpointId = null;
+            finding.RenderIsVirtual = false;
+            finding.AudioFlowing = false;
+
             bool enumerate = (sampleCounter++ % EnumerateEverySamples) == 0;
 
             if (enumerate)

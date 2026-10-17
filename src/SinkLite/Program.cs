@@ -216,8 +216,9 @@ namespace SinkLite
 
         private static int RunWindow(SinkController controller, CliOptions options)
         {
-            WaitForDevices(controller);
-
+            // 刻意不在这里 WaitForDevices：
+            // 设备枚举在后台线程进行，窗口应当先显示出来，设备列表随后自动填充。
+            // 阻塞等待会让启动速度直接受蓝牙枚举耗时影响（曾导致数百毫秒到数秒的白等）。
             using (EndpointWatcher watcher = new EndpointWatcher())
             {
                 RouteControl route = new RouteControl(watcher);
@@ -232,8 +233,10 @@ namespace SinkLite
                 using (SinkLite.UI.MainWindow window = new SinkLite.UI.MainWindow(controller, log))
                 {
                     window.Create();
+                    window.ShowWindow();
                     log.Info("Window.Starting", ("devices", controller.Devices.Count));
 
+                    // 先显示窗口，再发起自动连接：连接过程不占用首帧时间
                     Settings settings = Settings.Load();
                     if (settings.AutoConnect)
                     {
@@ -241,8 +244,6 @@ namespace SinkLite
                         controller.RequestConnect(target);
                         log.Info("Window.AutoConnectRequested", ("device", string.IsNullOrEmpty(target) ? "(第一个可用)" : target));
                     }
-
-                    window.ShowWindow();
 
                     // 标准消息循环：窗口即全部界面，不再有托盘窗口需要分发
                     Win32.MSG msg;

@@ -548,11 +548,8 @@ namespace SinkLite.Core
                 return;
             }
 
-            if (connection == null)
-            {
-                return;
-            }
-
+            // 必须先处理退避重试：失败时连接对象已被释放（connection == null），
+            // 如果把 connection 判空放在前面，重试就永远不会执行，程序会卡在失败态。
             if (retryAt.HasValue && DateTime.Now >= retryAt.Value)
             {
                 retryAt = null;
@@ -571,6 +568,12 @@ namespace SinkLite.Core
                     await ConnectInternalAsync(target);
                     return;
                 }
+            }
+
+            // 没有连接对象且不在退避中：无事可做
+            if (connection == null)
+            {
+                return;
             }
 
             FlowFinding finding = flow.Sample();

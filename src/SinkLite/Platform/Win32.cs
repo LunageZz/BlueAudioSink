@@ -142,6 +142,12 @@ namespace SinkLite.Platform
         [DllImport("user32.dll")]
         public static extern void PostQuitMessage(int exitCode);
 
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr FindWindow(string className, string title);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int MessageBox(IntPtr window, string text, string caption, uint type);
+
         [DllImport("user32.dll")]
         public static extern bool ShowWindow(IntPtr hWnd, int cmdShow);
 

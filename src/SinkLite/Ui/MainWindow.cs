@@ -132,7 +132,10 @@ namespace SinkLite.UI
             wc.hIcon = LoadAppIcon();
             wc.hIconSm = LoadAppIcon();
             wc.lpszClassName = "BlueAudioSinkMainWindow";
-            Win32.RegisterClassEx(ref wc);
+            ushort registered = Win32.RegisterClassEx(ref wc);
+            int registrationError = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+            if (registered == 0 && registrationError != 1410)
+                throw new System.ComponentModel.Win32Exception(registrationError, "注册主窗口失败");
 
             hwnd = Win32.CreateWindowEx(
                 0,
@@ -142,6 +145,13 @@ namespace SinkLite.UI
                 S(160), S(160), S(580), S(440),
                 IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
 
+            if (hwnd == IntPtr.Zero)
+            {
+                int error = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+                log.Error("Ui.CreateFailed", ("win32Error", error));
+                throw new System.ComponentModel.Win32Exception(error, "创建主窗口失败");
+            }
+            log.Info("Ui.WindowHandle", ("hwnd", hwnd.ToInt64()));
             Win32.SetTimer(hwnd, new IntPtr(IdTimer), 1000, IntPtr.Zero);
             controller.SnapshotChanged += OnSnapshotChanged;
             log.Info("Ui.Created", ("dpi", (int)dpi), ("scale", scale), ("mode", wifiMode ? "wifi" : "bluetooth"));
@@ -243,6 +253,9 @@ namespace SinkLite.UI
             {
                 Win32.ShowWindow(hwnd, Win32.SW_SHOW);
             }
+            // The first ShowWindow call can obey a launcher's SW_HIDE startup flag.
+            // A window-only application must explicitly show its UI after that call.
+            Win32.ShowWindow(hwnd, Win32.SW_SHOW);
             Win32.SetForegroundWindow(hwnd);
             RefreshOutputCache(true);
             RequestRepaint(true);

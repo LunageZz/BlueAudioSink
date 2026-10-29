@@ -41,12 +41,31 @@ namespace SinkLite
                 {
                     if (!createdNew)
                     {
-                        return 0;
+                        for (int attempt = 0; attempt < 15; attempt++)
+                        {
+                            IntPtr existing = Win32.FindWindow("BlueAudioSinkMainWindow", null);
+                            if (existing != IntPtr.Zero)
+                            {
+                                Win32.ShowWindow(existing, Win32.SW_RESTORE);
+                                Win32.ShowWindow(existing, Win32.SW_SHOW);
+                                Win32.SetForegroundWindow(existing);
+                                return 0;
+                            }
+                            Thread.Sleep(100);
+                        }
+                        Win32.MessageBox(IntPtr.Zero, "程序已在运行，但主窗口未就绪。请关闭旧进程后重试。", "BlueAudioSink", 0x40);
+                        return 1;
                     }
 
                     try
                     {
                         return RunCore(options);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (log != null) log.Error("App.StartFailed", ("error", ex.ToString()));
+                        Win32.MessageBox(IntPtr.Zero, "启动失败：" + ex.Message, "BlueAudioSink", 0x10);
+                        return 2;
                     }
                     finally
                     {

@@ -1,3 +1,5 @@
+> 2026-10-30 播放行为按协议 v1.2 更新；历史 seq 表和旧验收数据请以协议修订与修复报告为准。
+
 # PC 端实现（Wi-Fi 模式）
 
 > 对应协议：`docs/02-protocol.md` v1.1（5 ms / 960 字节 / 200 包每秒）。
@@ -92,40 +94,16 @@ d == 2^32-1            → 重复，dup++
 - 重置后保留会话统计（协议要求），只清抖动窗口与队列。
 - AUDIO 的 `flags.bit0` 只由手机置位；PC 只记录一次 `discontinuities` 并安排 5 ms 淡入，绝不回写 flags。
 
-## 5. 抖动缓冲 D（协议 §6）
+## 5. 播放缓冲（v1.2，2026-10-30）
 
-### 5.1 定义
+以 `02-protocol.md` §6/§7 和 `08-audio-playout-fix.md` 为准。
 
-```
-D = BufferedWaveProvider.BufferedMs + 抖动队列帧数 × 5 ms
-lastTarget = 最近一次 500 ms 评估算出的 targetMs
-```
-
-- 预缓冲：D ≥ lastTarget（初始 40 ms）才启动 WasapiOut；预填 `targetMs/5` 帧到播放缓冲。
-- 硬上限：`maxMs`（默认 200 ms）。每次入队/调整后若 D > maxMs，从队首丢弃最旧数据（先播放缓冲，再队列），计 `dropped`。
-- 播放中 D 降到 0、队列空：进入重缓冲（`rebuffering=true`，`underruns++`，状态 LinkReady）；继续入队直到 D ≥ lastTarget，再恢复播放并做 5 ms 淡入。重缓冲不清 seq 基线。
-- STOP 排空：不再接受 AUDIO；播放剩余队列，D ≤ 5 ms 或 500 ms 超时后释放播放器回 Armed。
-
-### 5.2 500 ms 评估
-
-```
-J = 最近 2 秒内所有相邻且 seq 差 1 的包对的 mean(|Δ到达 − Δ采样|)   // 微秒
-    Δ采样 ≤ 0 或 > 100 ms 的包对丢弃；无有效对时 J = 0
-target = clamp(40000 + 4 × J, 40000, maxMs×1000)                  // 微秒
-Δ = clamp(targetMs − D, −5, +10)                                   // 毫秒
-若 Δ < 0：丢弃队首 |Δ| ms 最旧数据，D += Δ
-若 Δ > 0：向队尾追加 Δ ms 全 0 静音，D += Δ
-```
-
-- 只统计**到达间隔与采样时刻间隔之差**，不是“与 5 ms 的差”；J 用微秒，避免毫秒取整误差。
-- 调整以 1 ms 为粒度；`|Δ| < 1 ms` 不调整。
-- 预缓冲/重缓冲期间只更新 lastTarget，不调整 D；恢复阈值取最新 lastTarget。
-- `targetMs` 即 UI/日志的 `targetMs`，也是重缓冲阈值。
-
-### 5.3 淡入/淡出
-
-- 缺口补静音后，首个真实帧调用 `AudioOutput.AddFadeIn`，做 5 ms 线性 0→1。
-- 协议要求缺口前后各 5 ms 淡出/淡入；当前实现只做**恢复时的淡入**，没有对缺口前最后一帧做淡出（需要在播放缓冲里回改已入队数据，代价较高）。这是已知实现差异，听感上由静音帧隔离，见 §10。
+- WifiReceiver 每轮释放可用重排包并尽快送入 AudioOutput，2 ms 循环只做转交/超时/统计，不再决定 PCM 消费速率。
+- PlayoutBuffer.Read 由 WasapiOut 驱动，是唯一消费点；计实际 PaddingFrames / Underruns / Overflows。
+- 每 500 ms 只更新首次/恢复预填阈值（默认最低 80 ms），不能为调节正常队列深度插静音/裁剪。
+- 空接收队列不等于声卡欠载；Read 真正不足才恢复。恢复期间保留未消费音频，达到完整阈值后恢复。
+- 小幅乱序等待 20 ms；帧本地 FadeIn 标记确保淡入位置与实际断流包一致。
+- 容量 1 秒，溢出明确故障。STOP 正常排空与故障补零分开统计。
 
 ## 6. 状态机（复用 SinkState）
 
@@ -163,7 +141,7 @@ target = clamp(40000 + 4 × J, 40000, maxMs×1000)                  // 微秒
 
 ## 8. 播放器与格式
 
-- `AudioOutput` 构造 `BufferedWaveProvider(48000, 16, 2)`，`BufferDuration=1 s`、`ReadFully=true`、`DiscardOnBufferOverflow=true`。
+- `AudioOutput` 构造 `PlayoutBuffer(48000,16,2)`，容量 1 s；底层 ReadFully=false，真实补零由 Read 包装层计数。
 - `WasapiOut(AudioClientShareMode.Shared, 50)` 打开**默认输出端点**；`Init` 不 `Play`，预填后再 `Play`。
 - 事件：`Player.Created`（format/latencyMs/bufferMs）、`Player.Released`、`Player.Fault`。
 - 播放器打开失败 → `Faulted`，停止 PING；下一次 START 重试。
@@ -191,7 +169,7 @@ target = clamp(40000 + 4 × J, 40000, maxMs×1000)                  // 微秒
 ### 9.3 设置与 CLI
 
 - 设置文件：`%LocalAppData%\BlueAudioSink\settings.ini`
-  `mode=wifi|bluetooth`、`wifiport=45679`、`bufferbasems=40`、`buffermaxms=200`。
+  `mode=wifi|bluetooth`、`wifiport=45679`、`bufferbasems=80`、`buffermaxms=200`。
 - `--wifi`：直接以 Wi-Fi 模式启动（覆盖 settings.Mode）；启动后仍显示主窗口，可切回蓝牙。
 - 无参数启动读取 `mode`；若 `mode=wifi` 则启动即 Wi-Fi。
 - 单实例互斥仍生效：已有实例运行时第二个 `--wifi` 直接退出。

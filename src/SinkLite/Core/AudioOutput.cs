@@ -6,9 +6,9 @@ using SinkLite.Platform;
 namespace SinkLite.Core
 {
     /// <summary>
-    /// 播放输出：WasapiOut（共享模式，50 ms）+ BufferedWaveProvider（48 kHz / 16-bit / 立体声）。
+    /// 播放输出：WasapiOut（共享模式，50 ms）+ PlayoutBuffer（48 kHz / 16-bit / 立体声）。
     ///
-    /// 缓冲容量固定 1 秒，ReadFully=true 保证 WASAPI 拉不到数据时自动补静音。
+    /// 唯一缓冲由 WASAPI Read 消费，实际缺数在 Read 层计数并重缓冲。
     /// 所有方法都由接收器的播放线程串行调用，内部再加锁以兼容 UI 线程读取统计。
     /// </summary>
     internal sealed class AudioOutput : IDisposable
@@ -18,27 +18,18 @@ namespace SinkLite.Core
 
         private readonly object sync = new object();
         private readonly Log log;
-        private readonly BufferedWaveProvider buffer;
+        private readonly PlayoutBuffer buffer;
         private readonly byte[] silence;
-        private readonly byte[] silencePad;
         private readonly byte[] fade;
-        private readonly byte[] discard;
         private WasapiOut output;
         private bool disposed;
 
         public AudioOutput(Log log)
         {
             this.log = log;
-            WaveFormat format = new WaveFormat(WifiTransport.SampleRate, WifiTransport.BitsPerSample, WifiTransport.Channels);
-            buffer = new BufferedWaveProvider(format);
-            buffer.BufferDuration = TimeSpan.FromSeconds(BufferSeconds);
-            buffer.ReadFully = true;
-            buffer.DiscardOnBufferOverflow = true;
-
+            buffer = new PlayoutBuffer { UseMmcss = true };
             silence = new byte[WifiTransport.PayloadBytes];
-            silencePad = new byte[WifiTransport.PayloadBytes * 4];
             fade = new byte[WifiTransport.PayloadBytes];
-            discard = new byte[WifiTransport.PayloadBytes * 8];
         }
 
         public int BufferedMs
@@ -47,7 +38,7 @@ namespace SinkLite.Core
             {
                 lock (sync)
                 {
-                    return (int)Math.Round(buffer.BufferedDuration.TotalMilliseconds);
+                    return buffer.BufferedMs;
                 }
             }
         }
@@ -86,6 +77,12 @@ namespace SinkLite.Core
                 {
                     created = new WasapiOut(AudioClientShareMode.Shared, PlaybackLatencyMs);
                     created.Init(buffer);
+                    created.PlaybackStopped += (_, e) =>
+                    {
+                        buffer.ReleaseAudioThread();
+                        if (e.Exception != null)
+                            log.Error("Player.Fault", ("code", "PlaybackStopped"), ("detail", e.Exception.Message));
+                    };
                     output = created;
                     log.Info(
                         "Player.Created",
@@ -145,59 +142,24 @@ namespace SinkLite.Core
                 return;
             }
 
-            lock (sync)
-            {
-                try
-                {
-                    buffer.AddSamples(data, offset, count);
-                }
-                catch
-                {
-                    // DiscardOnBufferOverflow=true 时正常不会抛；保留防御。
-                }
-            }
+            buffer.Add(data, offset, count);
         }
+
+        public long PaddingFrames { get { return buffer.PaddingFrames; } }
+        public long ActualUnderruns { get { return buffer.Underruns; } }
+        public long Overflows { get { return buffer.Overflows; } }
+        public bool MmcssActive { get { return buffer.MmcssActive; } }
+        public double MaxReadGapMs { get { return buffer.MaxReadGapMs; } }
+        public long InputFrames { get { return buffer.InputFrames; } }
+        public long MaxInputZeroRunFrames { get { return buffer.MaxInputZeroRunFrames; } }
+        public bool Recovering { get { return buffer.Recovering; } }
+        public int TargetMs { set { buffer.TargetMs = value; } }
+        public void EndInput() { buffer.EndInput(); }
 
         /// <summary>补一帧 5 ms 静音，用于单包缺失时避免爆音。</summary>
         public void AddSilence()
         {
-            lock (sync)
-            {
-                try
-                {
-                    buffer.AddSamples(silence, 0, silence.Length);
-                }
-                catch
-                {
-                }
-            }
-        }
-
-        /// <summary>向队尾追加指定毫秒的静音（§6.3 的 Δ&gt;0 调整，1~10 ms）。</summary>
-        public void AddSilenceMs(int milliseconds)
-        {
-            if (milliseconds <= 0)
-            {
-                return;
-            }
-
-            int bytes = Math.Min(silencePad.Length, milliseconds * (WifiTransport.SampleRate * WifiTransport.BytesPerFrame) / 1000);
-            bytes -= bytes % WifiTransport.BytesPerFrame;
-            if (bytes <= 0)
-            {
-                return;
-            }
-
-            lock (sync)
-            {
-                try
-                {
-                    buffer.AddSamples(silencePad, 0, bytes);
-                }
-                catch
-                {
-                }
-            }
+            buffer.Add(silence, 0, silence.Length);
         }
 
         /// <summary>
@@ -206,88 +168,24 @@ namespace SinkLite.Core
         /// </summary>
         public void AddFadeIn(byte[] data, int offset, int count)
         {
-            if (data == null || count <= 0)
-            {
-                return;
-            }
-
+            if (data == null || count <= 0) return;
             lock (sync)
             {
-                try
+                int bytes = Math.Min(count, fade.Length);
+                int frames = bytes / WifiTransport.BytesPerFrame;
+                for (int frame = 0; frame < frames; frame++)
                 {
-                    int frames = Math.Min(count, fade.Length);
-                    int samples = frames / 2;
-                    if (samples <= 0)
+                    for (int channel = 0; channel < 2; channel++)
                     {
-                        buffer.AddSamples(data, offset, count);
-                        return;
-                    }
-
-                    for (int i = 0; i < samples; i++)
-                    {
-                        int index = i * 2;
-                        short value = (short)(data[offset + index] | (data[offset + index + 1] << 8));
-                        double gain = (double)(i + 1) / samples;
-                        short scaled = (short)(value * gain);
-                        fade[index] = (byte)(scaled & 0xFF);
-                        fade[index + 1] = (byte)((scaled >> 8) & 0xFF);
-                    }
-
-                    buffer.AddSamples(fade, 0, frames);
-                    if (count > frames)
-                    {
-                        buffer.AddSamples(data, offset + frames, count - frames);
+                        int i = frame * 4 + channel * 2;
+                        short sample = (short)(data[offset + i] | data[offset + i + 1] << 8);
+                        short scaled = (short)(sample * (frame + 1) / frames);
+                        fade[i] = (byte)scaled;
+                        fade[i + 1] = (byte)(scaled >> 8);
                     }
                 }
-                catch
-                {
-                }
-            }
-        }
-
-        /// <summary>
-        /// 丢弃最旧的数据，把缓冲压到 keepMs 左右（按 4 字节帧对齐）。
-        /// BufferedWaveProvider 没有"丢最旧"的 API，这里用 Read 消费掉队首数据实现。
-        /// </summary>
-        public void DiscardOldest(int keepMs)
-        {
-            if (keepMs < 0)
-            {
-                keepMs = 0;
-            }
-
-            lock (sync)
-            {
-                try
-                {
-                    int keepBytes = keepMs * (WifiTransport.SampleRate * WifiTransport.BytesPerFrame) / 1000;
-                    int excess = buffer.BufferedBytes - keepBytes;
-                    if (excess <= 0)
-                    {
-                        return;
-                    }
-
-                    excess -= excess % WifiTransport.BytesPerFrame;
-                    while (excess > 0)
-                    {
-                        int available = buffer.BufferedBytes;
-                        if (available <= 0)
-                        {
-                            break;
-                        }
-
-                        int chunk = Math.Min(excess, Math.Min(discard.Length, available));
-                        int read = buffer.Read(discard, 0, chunk);
-                        if (read <= 0)
-                        {
-                            break;
-                        }
-                        excess -= read;
-                    }
-                }
-                catch
-                {
-                }
+                buffer.Add(fade, 0, bytes);
+                if (count > bytes) buffer.Add(data, offset + bytes, count - bytes);
             }
         }
 
@@ -297,7 +195,7 @@ namespace SinkLite.Core
             {
                 try
                 {
-                    buffer.ClearBuffer();
+                    buffer.Clear();
                 }
                 catch
                 {
@@ -313,9 +211,11 @@ namespace SinkLite.Core
             {
                 current = output;
                 output = null;
+                log.Info("Player.ReadStats", ("paddingFrames", buffer.PaddingFrames),
+                    ("underruns", buffer.Underruns), ("overflows", buffer.Overflows));
                 try
                 {
-                    buffer.ClearBuffer();
+                    buffer.Clear();
                 }
                 catch
                 {

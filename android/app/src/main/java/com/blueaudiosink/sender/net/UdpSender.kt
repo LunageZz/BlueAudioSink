@@ -69,6 +69,7 @@ class UdpSender(context: Context) {
 
     /** AUDIO 包序号，从 0 开始，START 时归零。 */
     private var seq: Int = 0
+    private var sendFailures = 0L
 
     /** 复用缓冲：960 payload + 16 包头，避免每包分配。 */
     private val frameBuffer = ByteArray(PacketCodec.AUDIO_PACKET_SIZE)
@@ -172,16 +173,17 @@ class UdpSender(context: Context) {
             val sock = socket ?: return
             val address = resolveTarget() ?: return
             val flags = if (discontinuity) PacketCodec.FLAG_DISCONTINUITY else 0
-            PacketCodec.writeHeader(frameBuffer, PacketCodec.TYPE_AUDIO, flags, seq, timestampUs)
+            val packetSeq = seq++ // Consume source time even if send fails.
+            PacketCodec.writeHeader(frameBuffer, PacketCodec.TYPE_AUDIO, flags, packetSeq, timestampUs)
             System.arraycopy(payload, 0, frameBuffer, PacketCodec.HEADER_SIZE, length)
             try {
                 sock.send(DatagramPacket(frameBuffer, PacketCodec.HEADER_SIZE + length, address, targetPort))
             } catch (e: Exception) {
-                Log.w(TAG, "send audio failed", e)
+                sendFailures++
+                Log.w(TAG, "send audio failed count=$sendFailures", e)
                 listener?.onError("发送失败：" + (e.message ?: e.javaClass.simpleName))
                 return
             }
-            seq++
         }
     }
 
@@ -270,7 +272,7 @@ class UdpSender(context: Context) {
     }
 
     private fun sendControlLocked(type: Int) {
-        sendLocked(type, 0, null, 0)
+        sendLocked(type, (SystemClock.elapsedRealtimeNanos() / 1000L).toInt(), null, 0)
     }
 
     private fun sendLocked(type: Int, timestampUs: Int, payload: ByteArray?, payloadLength: Int) {

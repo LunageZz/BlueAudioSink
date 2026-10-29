@@ -10,7 +10,6 @@ import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import com.blueaudiosink.sender.net.PacketCodec
-import java.util.Arrays
 import java.util.concurrent.locks.LockSupport
 import kotlin.math.abs
 
@@ -18,8 +17,8 @@ import kotlin.math.abs
  * 采集链：MediaProjection → AudioPlaybackCaptureConfiguration → AudioRecord。
  *
  * 采集线程按 240 帧（960 字节）读，写入一个按包编号的环形缓冲；
- * 发送线程用单调时钟严格按 5 ms（200 包/秒）节奏出包，绝不因为没数据而停发：
- * 环空时补静音，并把 flags.bit0 置 1 表示「内容不连续」。
+ * 发送线程按 5 ms 节奏发送真实采集包；环空时等待采集，不伪造静音。
+ * 真正的环溢出丢包会标记内容不连续，PC 缓冲吸收短暂调度抖动。
  *
  * timestampUs 取该包首帧的采样时刻（单调时钟微秒低 32 位），
  * 由采集线程在读到整包时按「读取完成时刻 − 5 ms」估算后随包携带。
@@ -60,7 +59,10 @@ class PcmRecorder(
 
     private val outBuffer = ByteArray(packetBytes)
     private var lastSentTsUs = 0L
-    private var sentRealData = false
+    private var sourceWaits = 0L
+    private var sourceOverflows = 0L
+    private var shortReads = 0L
+    private var sentPackets = 0L
 
     @Volatile
     private var overflowGap = false
@@ -182,9 +184,11 @@ class PcmRecorder(
     private fun captureLoop(recorder: AudioRecord) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         val chunk = ByteArray(packetBytes)
+        var accumulated = 0
         while (running) {
+            val requested = packetBytes - accumulated
             val read = try {
-                recorder.read(chunk, 0, packetBytes, AudioRecord.READ_BLOCKING)
+                recorder.read(chunk, accumulated, requested, AudioRecord.READ_BLOCKING)
             } catch (e: Exception) {
                 -1
             }
@@ -200,17 +204,21 @@ class PcmRecorder(
                 continue
             }
             if (read == 0) continue
-            // 短读补零，仍按 240 帧推进，保证 5 ms 节拍不被打乱
-            if (read < packetBytes) Arrays.fill(chunk, read, packetBytes, 0)
-
-            // 该包第 0 帧的采样时刻（不是发送时刻，也不是读取完成时刻）
+            if (read < requested) shortReads++
+            accumulated += read
             framesRead += read.toLong() / (PacketCodec.CHANNEL_COUNT * PacketCodec.BYTES_PER_SAMPLE)
+            // A short read is not missing audio. Accumulate the rest without inserting zeros.
+            if (accumulated < packetBytes) continue
+            accumulated = 0
+
+            // First captured frame, in the same BOOTTIME basis used for packet scheduling.
             val captureTsUs = firstFrameCaptureUs(recorder, framesRead - PacketCodec.FRAMES_PER_PACKET)
             synchronized(lock) {
                 if (fill == capacity) {
                     // 环满：丢最旧一包保低延迟，并标记内容不连续
                     readIndex = (readIndex + 1) % capacity
                     fill--
+                    sourceOverflows++
                     overflowGap = true
                 }
                 System.arraycopy(chunk, 0, ring, writeIndex * packetBytes, packetBytes)
@@ -232,7 +240,7 @@ class PcmRecorder(
     private fun firstFrameCaptureUs(recorder: AudioRecord, firstFrameIndex: Long): Long {
         val nowUs = SystemClock.elapsedRealtimeNanos() / 1000L
         return try {
-            if (recorder.getTimestamp(audioTimestamp, AudioTimestamp.TIMEBASE_MONOTONIC) ==
+            if (recorder.getTimestamp(audioTimestamp, AudioTimestamp.TIMEBASE_BOOTTIME) ==
                 AudioRecord.SUCCESS
             ) {
                 val deltaFrames = audioTimestamp.framePosition - firstFrameIndex
@@ -290,8 +298,11 @@ class PcmRecorder(
 
         var nextNs = SystemClock.elapsedRealtimeNanos()
         while (running) {
-            val wait = nextNs - SystemClock.elapsedRealtimeNanos()
-            if (wait > 0) LockSupport.parkNanos(wait)
+            while (running) {
+                val wait = nextNs - SystemClock.elapsedRealtimeNanos()
+                if (wait <= 0) break
+                LockSupport.parkNanos(wait)
+            }
             if (!running) break
 
             var hasData = false
@@ -306,14 +317,17 @@ class PcmRecorder(
                 }
             }
 
-            var discontinuity = false
-            if (hasData) {
-                sentRealData = true
-            } else {
-                // 没数据也必须发：补静音，保持 200 包/秒
-                Arrays.fill(outBuffer, 0)
-                if (sentRealData) discontinuity = true
+            if (!hasData) {
+                // An empty application ring is scheduling jitter, not missing PCM.
+                // Wait for real captured audio instead of inserting zeros into music.
+                sourceWaits++
+                try {
+                    synchronized(lock) { if (running && fill == 0) lock.wait(5) }
+                } catch (_: InterruptedException) { break }
+                nextNs = SystemClock.elapsedRealtimeNanos()
+                continue
             }
+            var discontinuity = false
             if (overflowGap) {
                 overflowGap = false
                 discontinuity = true
@@ -324,6 +338,12 @@ class PcmRecorder(
 
             onPacket(outBuffer, packetBytes, (outTsUs and 0xFFFFFFFFL).toInt(), discontinuity)
 
+            sentPackets++
+            if (sentPackets % 1000L == 0L) {
+                val queued = synchronized(lock) { fill }
+                Log.i(TAG, "Capture.Stats packets=$sentPackets ringPackets=$queued " +
+                    "sourceWaits=$sourceWaits sourceOverflows=$sourceOverflows shortReads=$shortReads")
+            }
             nextNs += PACKET_INTERVAL_NS
             val nowNs = SystemClock.elapsedRealtimeNanos()
             if (nowNs - nextNs > RESYNC_THRESHOLD_NS) nextNs = nowNs

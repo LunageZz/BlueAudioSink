@@ -15,8 +15,8 @@ namespace SinkLite.Core
     /// 协议实现要点（docs/02-protocol.md v1.1）：
     ///   - PC 绑定 0.0.0.0:45678（控制）与 0.0.0.0:45679（音频）；
     ///   - AUDIO 5 ms / 240 帧 / 960 字节，seq 200 包每秒；
-    ///   - 按 d=(uint)(seq-expectedSeq) 判定正常 / 缺口 / 重复 / 迟到 / 重置；
-    ///   - D = 已入队未播放时长，硬上限 200 ms；500 ms 评估，-5/+10 ms 调整；
+    ///   - 20 ms 有界重排，到截止仍缺失才补包；旧迟到包不重置会话；
+    ///   - D = 已入队未播放时长；500 ms 更新恢复阈值，不改写健康音频；
     ///   - 缺口补静音；d>5 记断流并 5 ms 淡入；d>10 清队重缓冲；
     ///   - 欠载补静音并重缓冲到 lastTarget；STOP 排空 ≤500 ms；5 秒无 AUDIO 回 Armed。
     /// </summary>
@@ -36,6 +36,8 @@ namespace SinkLite.Core
             public uint Seq;
             public byte[] Data;
             public bool Silence;
+            public bool FadeIn;
+            public long ArrivalTicks;
         }
 
         private struct JitterSample
@@ -60,6 +62,9 @@ namespace SinkLite.Core
         private readonly string deviceName;
         private readonly Stopwatch clock = Stopwatch.StartNew();
 
+        private readonly Dictionary<uint, AudioFrame> reorder = new Dictionary<uint, AudioFrame>();
+        private long gapSinceTicks;
+        private const int ReorderWaitMs = 20;
         private readonly List<AudioFrame> queue = new List<AudioFrame>(64);
         private readonly Queue<JitterSample> jitterSamples = new Queue<JitterSample>(512);
         private readonly Queue<LossSample> lossWindow = new Queue<LossSample>(512);
@@ -89,12 +94,12 @@ namespace SinkLite.Core
         private uint sessionStartUs;
         private bool hasSessionStart;
 
+        private long drainEmptyTicks;
         private long stopTicks;
         private long lastAudioTicks;
         private long lastAnyTicks;
         private long prevArrivalTicks;
         private uint lastTimestampUs;
-        private long nextDueTicks;
         private long lastAdaptTicks;
         private long lastStatsLogTicks;
         private long lastAggregateLogTicks;
@@ -435,7 +440,7 @@ namespace SinkLite.Core
                     sessionEndpoint = from;
                     remote = from;
                     BeginSessionLocked(now, false, 0);
-                    log.Info("Wifi.Start", ("endpoint", from.ToString()), ("ts", header.TimestampUs), ("auto", true));
+                    log.Info("Wifi.Start", ("endpoint", from.ToString()), ("packetTsUs", header.TimestampUs), ("auto", true));
                 }
                 else if (!SameEndpoint(sessionEndpoint, from))
                 {
@@ -455,8 +460,7 @@ namespace SinkLite.Core
                     }
                 }
 
-                int gap = AcceptSequenceLocked(header.Seq, now);
-                if (gap < 0)
+                if (!CanQueueSequenceLocked(header.Seq, now))
                 {
                     return;
                 }
@@ -470,7 +474,9 @@ namespace SinkLite.Core
                 frame.Seq = header.Seq;
                 frame.Data = rented;
                 frame.Silence = false;
-                queue.Add(frame);
+                frame.FadeIn = (header.Flags & WifiTransport.FlagDiscontinuity) != 0;
+                frame.ArrivalTicks = now;
+                reorder.Add(frame.Seq, frame);
                 received++;
                 AddLossSampleLocked(1, 0);
 
@@ -478,14 +484,10 @@ namespace SinkLite.Core
                 if (!firstAudio)
                 {
                     firstAudio = true;
-                    log.Info("Wifi.FirstAudio", ("seq", header.Seq), ("ts", header.TimestampUs));
+                    log.Info("Wifi.FirstAudio", ("seq", header.Seq), ("packetTsUs", header.TimestampUs));
                 }
 
-                if ((header.Flags & WifiTransport.FlagDiscontinuity) != 0 && !fadeInPending)
-                {
-                    fadeInPending = true;
-                    discontinuities++;
-                }
+                if (frame.FadeIn) discontinuities++;
 
                 if (state != SinkState.Flowing)
                 {
@@ -493,76 +495,69 @@ namespace SinkLite.Core
                     detail = "预缓冲中";
                 }
 
-                EnforceHardCapLocked();
             }
         }
 
-        /// <summary>
-        /// 按协议 §7.1 处理 seq。返回 0 表示正常接受，-1 表示丢弃。
-        /// 缺口时先把静音帧追加到队尾，再追加当前包。
-        /// </summary>
-        private int AcceptSequenceLocked(uint seq, long now)
+        private bool CanQueueSequenceLocked(uint seq, long now)
         {
             if (!expectedValid)
             {
                 expectedValid = true;
-                expectedSeq = seq + 1;
-                return 0;
+                expectedSeq = seq;
             }
-
-            uint d = unchecked(seq - expectedSeq);
-            if (d == 0)
+            int distance = unchecked((int)(seq - expectedSeq));
+            if (distance < 0) { late++; return false; }
+            if (reorder.ContainsKey(seq)) { duplicates++; return false; }
+            // A major forward jump is a discontinuity, but old late packets never reset playback.
+            if (distance > 200)
             {
-                expectedSeq = seq + 1;
-                return 0;
+                ClearQueueLocked();
+                expectedSeq = seq;
+                resets++;
+                discontinuities++;
+                log.Warn("Wifi.Reset", ("newSeq", seq));
             }
+            return true;
+        }
 
-            if (d <= MaxGapPackets)
+        private void FlushReorderLocked(long now)
+        {
+            while (reorder.Count > 0)
             {
-                for (uint i = 0; i < d; i++)
+                AudioFrame next;
+                if (reorder.TryGetValue(expectedSeq, out next))
                 {
-                    AudioFrame silence = new AudioFrame();
-                    silence.Seq = unchecked(expectedSeq + i);
-                    silence.Silence = true;
-                    queue.Add(silence);
+                    reorder.Remove(expectedSeq++);
+                    queue.Add(next);
+                    gapSinceTicks = 0;
+                    continue;
                 }
-
-                missing += d;
-                AddLossSampleLocked(0, (int)d);
-                gapPending += (int)d;
-                gapLastSeq = seq;
-                fadeInPending = true;
-                if (d > 5)
+                // Wait on the oldest packet beyond the gap; the deadline does not slide
+                // with subsequent arrivals or each newly discovered missing sequence.
+                long oldest = long.MaxValue;
+                uint nearest = 0;
+                int distance = int.MaxValue;
+                foreach (AudioFrame candidate in reorder.Values)
                 {
+                    oldest = Math.Min(oldest, candidate.ArrivalTicks);
+                    int d = unchecked((int)(candidate.Seq - expectedSeq));
+                    if (d >= 0 && d < distance) { distance = d; nearest = candidate.Seq; }
+                }
+                gapSinceTicks = oldest;
+                if (!draining && now - gapSinceTicks < TicksFromMs(ReorderWaitMs)) break;
+                if (distance > MaxGapPackets)
+                {
+                    expectedSeq = nearest;
                     discontinuities++;
+                    fadeInPending = true;
+                    continue;
                 }
-
-                expectedValid = true;
-                expectedSeq = seq + 1;
-                return (int)d;
+                queue.Add(new AudioFrame { Seq = expectedSeq++, Silence = true });
+                missing++;
+                AddLossSampleLocked(0, 1);
+                gapPending++;
+                gapLastSeq = expectedSeq;
             }
-
-            if (d == uint.MaxValue)
-            {
-                duplicates++;
-                return -1;
-            }
-
-            if (d >= uint.MaxValue - 9)
-            {
-                late++;
-                return -1;
-            }
-
-            // 前向跳变 > 10：视为时间轴重置，不补静音。
-            uint oldSeq = expectedSeq - 1;
-            expectedValid = true;
-            expectedSeq = seq + 1;
-            ResetForSeqJumpLocked(seq, now);
-            resets++;
-            discontinuities++;
-            log.Warn("Wifi.Reset", ("oldSeq", oldSeq), ("newSeq", seq), ("queuedMs", 0));
-            return 0;
         }
 
         private void HandleStart(WifiTransport.WifiHeader header, IPEndPoint from, long now)
@@ -583,7 +578,7 @@ namespace SinkLite.Core
             log.Info(
                 "Wifi.Start",
                 ("endpoint", from == null ? "?" : from.ToString()),
-                ("ts", header.TimestampUs),
+                ("packetTsUs", header.TimestampUs),
                 ("auto", false));
         }
 
@@ -614,13 +609,13 @@ namespace SinkLite.Core
                 stopTicks = now;
                 state = SinkState.LinkReady;
                 detail = "排空缓冲中";
-                if (!playing && queue.Count == 0)
+                if (!playing && queue.Count == 0 && reorder.Count == 0)
                 {
                     finish = true;
                 }
             }
 
-            log.Info("Wifi.Stop", ("ts", header.TimestampUs));
+            log.Info("Wifi.Stop", ("packetTsUs", header.TimestampUs));
 
             if (finish)
             {
@@ -781,10 +776,16 @@ namespace SinkLite.Core
                         break;
                     }
                     log.Error("Wifi.Fault", ("code", "PlayoutFailed"), ("detail", ex.Message));
-                    Thread.Sleep(100);
+                    lock (sync)
+                    {
+                        state = SinkState.Faulted;
+                        detail = "音频播放失败：" + ex.Message;
+                        DetachOutputLocked();
+                        playing = false;
+                    }
                 }
 
-                Thread.Sleep(5);
+                Thread.Sleep(2);
             }
         }
 
@@ -848,135 +849,46 @@ namespace SinkLite.Core
                 AdaptLocked(now);
             }
 
-            if (!playing)
+            FlushReorderLocked(now);
+            int depth = DepthLocked();
+            if (output == null)
             {
-                int depth = DepthLocked();
-                bool ready = depth >= targetMs || (draining && depth > 0);
-                if (!ready)
-                {
-                    if (draining && depth == 0)
-                    {
-                        DrainDoneLocked(now);
-                    }
-                    return false;
-                }
-
-                if (output == null)
-                {
-                    return true;
-                }
-
-                int prefill = draining ? queue.Count : Math.Min(queue.Count, Math.Max(1, targetMs / WifiTransport.FrameMs));
-                MoveFramesToOutputLocked(prefill);
-                output.Play();
-                playing = true;
-                nextDueTicks = now + TicksFromMs(WifiTransport.FrameMs);
-                if (draining)
-                {
-                    state = SinkState.LinkReady;
-                    detail = "排空缓冲中";
-                }
-                else
-                {
-                    state = SinkState.Flowing;
-                    detail = "接收中";
-                }
-                log.Info("Wifi.Playing", ("bufferMs", DepthLocked()));
+                if (depth >= targetMs || (draining && depth > 0)) return true;
+                if (draining && depth == 0) DrainDoneLocked(now);
                 return false;
             }
 
-            if (rebuffering)
+            output.TargetMs = targetMs;
+            MoveFramesToOutputLocked(queue.Count);
+            if (draining) output.EndInput();
+            if (!playing && (output.BufferedMs >= targetMs || (draining && output.BufferedMs > 0)))
             {
-                if (DepthLocked() >= targetMs)
+                output.Play();
+                playing = true;
+                log.Info("Wifi.Playing", ("bufferMs", DepthLocked()));
+            }
+            if (playing)
+            {
+                long actual = output.ActualUnderruns;
+                if (actual > underruns) underrunPending += (int)(actual - underruns);
+                underruns = actual;
+                bool wasRecovering = rebuffering;
+                rebuffering = output.Recovering;
+                if (wasRecovering && !rebuffering)
                 {
-                    rebuffering = false;
-                    state = SinkState.Flowing;
-                    detail = "接收中";
-                    nextDueTicks = now;
-                    fadeInPending = true;
                     rebufferPending++;
-                    lastRebufferMs = DepthLocked();
+                    lastRebufferMs = output.BufferedMs;
                 }
-                else
-                {
-                    return false;
-                }
+                state = rebuffering || draining ? SinkState.LinkReady : SinkState.Flowing;
+                detail = draining ? "排空缓冲中" : rebuffering ? "实际输出欠载，重缓冲中" : "接收中";
             }
-
-            if (now >= nextDueTicks)
+            if (draining && queue.Count == 0 && reorder.Count == 0 && output.BufferedMs == 0)
             {
-                int guard = 0;
-                while (now >= nextDueTicks && guard < 5)
-                {
-                    PumpFrameLocked(now);
-                    nextDueTicks += TicksFromMs(WifiTransport.FrameMs);
-                    guard++;
-                }
-
-                if (now - nextDueTicks > TicksFromMs(200))
-                {
-                    nextDueTicks = now;
-                }
+                if (drainEmptyTicks == 0) drainEmptyTicks = now;
+                if (now - drainEmptyTicks >= TicksFromMs(100)) DrainDoneLocked(now);
             }
-
-            if (draining && queue.Count == 0 && (output == null || output.BufferedMs <= 5))
-            {
-                DrainDoneLocked(now);
-            }
-
+            else drainEmptyTicks = 0;
             return false;
-        }
-
-        private void PumpFrameLocked(long now)
-        {
-            if (queue.Count == 0)
-            {
-                if (draining)
-                {
-                    return;
-                }
-
-                if (!rebuffering)
-                {
-                    rebuffering = true;
-                    underruns++;
-                    underrunPending++;
-                    state = SinkState.LinkReady;
-                    detail = "欠载，重缓冲中";
-                    fadeInPending = true;
-                }
-                return;
-            }
-
-            AudioFrame frame = queue[0];
-            queue.RemoveAt(0);
-
-            if (frame.Silence)
-            {
-                if (output != null)
-                {
-                    output.AddSilence();
-                }
-            }
-            else if (output != null)
-            {
-                if (fadeInPending)
-                {
-                    fadeInPending = false;
-                    output.AddFadeIn(frame.Data, 0, WifiTransport.PayloadBytes);
-                }
-                else
-                {
-                    output.Add(frame.Data, 0, WifiTransport.PayloadBytes);
-                }
-            }
-
-            ReturnFrame(frame);
-            if (!draining && state == SinkState.LinkReady && !rebuffering)
-            {
-                state = SinkState.Flowing;
-                detail = "接收中";
-            }
         }
 
         private void MoveFramesToOutputLocked(int count)
@@ -985,18 +897,27 @@ namespace SinkLite.Core
             {
                 AudioFrame frame = queue[0];
                 queue.RemoveAt(0);
-                if (output != null)
+                try
                 {
-                    if (frame.Silence)
+                    if (output != null)
                     {
-                        output.AddSilence();
-                    }
-                    else
-                    {
-                        output.Add(frame.Data, 0, WifiTransport.PayloadBytes);
+                        if (frame.Silence)
+                        {
+                            output.AddSilence();
+                            fadeInPending = true;
+                        }
+                        else
+                        {
+                            if (frame.FadeIn || fadeInPending)
+                            {
+                                output.AddFadeIn(frame.Data, 0, WifiTransport.PayloadBytes);
+                                fadeInPending = false;
+                            }
+                            else output.Add(frame.Data, 0, WifiTransport.PayloadBytes);
+                        }
                     }
                 }
-                ReturnFrame(frame);
+                finally { ReturnFrame(frame); }
             }
         }
 
@@ -1013,27 +934,10 @@ namespace SinkLite.Core
             jitterUs = jitterSamples.Count > 0 ? sum / jitterSamples.Count : 0;
 
             int targetUs = (int)Math.Round(40000 + 4.0 * jitterUs);
-            // 下限 60ms：40ms 在实测中仍会偶发欠载（underrun），
-            // 按「优先稳定」原则抬高下限，代价约 +20ms 延迟。
-            targetUs = Math.Clamp(targetUs, (int)Math.Max(60000L, baseMs * 1000L / 2), maxMs * 1000);
-            targetMs = (int)Math.Round(targetUs / 1000.0);
-
-            // 播放中按“当前深度 D”调整；预缓冲/重缓冲期间只更新 lastTarget。
-            if (playing && !rebuffering && output != null)
-            {
-                int depth = DepthLocked();
-                int delta = Math.Clamp(targetMs - depth, -5, 10);
-                if (delta > 0)
-                {
-                    output.AddSilenceMs(delta);
-                    fadeInPending = true;
-                }
-                else if (delta < 0)
-                {
-                    TrimDepthLocked(depth + delta);
-                }
-                EnforceHardCapLocked();
-            }
+            targetMs = Math.Clamp((int)Math.Ceiling(targetUs / 1000.0), baseMs, maxMs);
+            // Only initial/recovery thresholds change. Never insert zeros or delete
+            // healthy music to chase an instantaneous queue-depth measurement.
+            if (output != null) output.TargetMs = targetMs;
         }
 
         private void UpdateJitterLocked(long now, WifiTransport.WifiHeader header)
@@ -1103,42 +1007,10 @@ namespace SinkLite.Core
             return (double)miss / (recv + miss) * 100.0;
         }
 
-        private void EnforceHardCapLocked()
-        {
-            int depth = DepthLocked();
-            if (depth <= maxMs)
-            {
-                return;
-            }
-            TrimDepthLocked(maxMs);
-        }
-
-        private void TrimDepthLocked(int keepMs)
-        {
-            if (output != null)
-            {
-                int provider = output.BufferedMs;
-                if (provider > keepMs)
-                {
-                    output.DiscardOldest(keepMs);
-                    dropped += provider - keepMs;
-                }
-            }
-
-            int queueKeep = Math.Max(0, keepMs - (output == null ? 0 : output.BufferedMs));
-            while (queue.Count > 0 && queue.Count * WifiTransport.FrameMs > queueKeep)
-            {
-                AudioFrame frame = queue[0];
-                queue.RemoveAt(0);
-                ReturnFrame(frame);
-                dropped++;
-            }
-        }
-
         private int DepthLocked()
         {
             int provider = output == null ? 0 : output.BufferedMs;
-            return provider + queue.Count * WifiTransport.FrameMs;
+            return provider + (queue.Count + reorder.Count) * WifiTransport.FrameMs;
         }
 
         // ===== 状态与生命周期 =====
@@ -1146,10 +1018,9 @@ namespace SinkLite.Core
         private void BeginSessionLocked(long now, bool fromStart, uint startUs)
         {
             ClearQueueLocked();
-            if (output != null)
-            {
-                output.Clear();
-            }
+            // Stop the old consumer before a new session starts prebuffering.
+            // Clearing an actively playing provider would manufacture startup underruns.
+            if (output != null) DetachOutputLocked();
 
             expectedValid = false;
             expectedSeq = 0;
@@ -1158,13 +1029,12 @@ namespace SinkLite.Core
             draining = false;
             rebuffering = false;
             fadeInPending = false;
-            hasSessionStart = fromStart;
+            hasSessionStart = fromStart && startUs != 0;
             sessionStartUs = startUs;
             lastAudioTicks = now;
             lastTimestampUs = 0;
             prevAudioValid = false;
             prevArrivalTicks = 0;
-            nextDueTicks = 0;
             lastAdaptTicks = now;
             lastStatsLogTicks = now;
             lastAggregateLogTicks = now;
@@ -1172,6 +1042,7 @@ namespace SinkLite.Core
             jitterUs = 0;
             jitterSamples.Clear();
             lossWindow.Clear();
+            drainEmptyTicks = 0;
             stopTicks = 0;
             received = 0;
             missing = 0;
@@ -1192,30 +1063,6 @@ namespace SinkLite.Core
             lastPongTicks = 0;
             state = SinkState.LinkReady;
             detail = "预缓冲中";
-        }
-
-        private void ResetForSeqJumpLocked(uint newSeq, long now)
-        {
-            ClearQueueLocked();
-            if (output != null)
-            {
-                output.Clear();
-            }
-
-            expectedValid = true;
-            expectedSeq = newSeq + 1;
-            playing = false;
-            draining = false;
-            rebuffering = false;
-            fadeInPending = true;
-            prevAudioValid = false;
-            prevArrivalTicks = 0;
-            jitterSamples.Clear();
-            jitterUs = 0;
-            lastAdaptTicks = now;
-            targetMs = Math.Max(baseMs, targetMs);
-            state = SinkState.LinkReady;
-            detail = "序号重置，重缓冲中";
         }
 
         private void TimeoutLocked(long now)
@@ -1244,6 +1091,7 @@ namespace SinkLite.Core
             firstAudio = false;
             hasSessionStart = false;
             sessionEndpoint = null;
+            drainEmptyTicks = 0;
             stopTicks = 0;
             lastAudioTicks = 0;
             lastTimestampUs = 0;
@@ -1280,6 +1128,9 @@ namespace SinkLite.Core
                 ReturnFrame(queue[i]);
             }
             queue.Clear();
+            foreach (AudioFrame frame in reorder.Values) ReturnFrame(frame);
+            reorder.Clear();
+            gapSinceTicks = 0;
         }
 
         private static void ReturnFrame(AudioFrame frame)
@@ -1401,7 +1252,13 @@ namespace SinkLite.Core
                 ("dup", duplicates),
                 ("late", late),
                 ("resets", resets),
-                ("underruns", underruns),
+                ("underruns", output == null ? underruns : output.ActualUnderruns),
+                ("outputPaddingFrames", output == null ? 0L : output.PaddingFrames),
+                ("outputOverflows", output == null ? 0L : output.Overflows),
+                ("mmcss", output != null && output.MmcssActive),
+                ("maxReadGapMs", output == null ? 0 : Math.Round(output.MaxReadGapMs, 2)),
+                ("inputFrames", output == null ? 0L : output.InputFrames),
+                ("maxInputZeroRunFrames", output == null ? 0L : output.MaxInputZeroRunFrames),
                 ("discontinuities", discontinuities),
                 ("malformed", malformed),
                 ("foreign", foreign),
@@ -1468,7 +1325,7 @@ namespace SinkLite.Core
                 snapshot.Duplicates = duplicates;
                 snapshot.Late = late;
                 snapshot.Resets = resets;
-                snapshot.Underruns = underruns;
+                snapshot.Underruns = output == null ? underruns : output.ActualUnderruns;
                 snapshot.Discontinuities = discontinuities;
                 snapshot.Malformed = malformed;
                 snapshot.Foreign = foreign;

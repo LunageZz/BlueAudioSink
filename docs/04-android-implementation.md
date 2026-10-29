@@ -1,3 +1,5 @@
+> 2026-10-30 修订：环空等待真实 PCM，短读攒满不补零；采样/控制统一 BOOTTIME；发送失败消耗序号。详见协议 v1.2 与 08-audio-playout-fix.md，旧自检勾选仅代表当时版本。
+
 # Android 端实现（Wi-Fi 发送端）
 
 > 本文记录 `android/` 工程的结构、采集链、协议实现、UI、构建与验证方法。
@@ -106,7 +108,7 @@ cd android
               │    ├─ AudioPlaybackCaptureConfiguration(USAGE_MEDIA, USAGE_GAME)
               │    ├─ AudioRecord：48 kHz / 16 bit / 立体声，内部 buffer = max(2×minBufferSize, 4×960)
               │    ├─ 采集线程：READ_BLOCKING 攒满 240 帧（960 B），写环形缓冲（带首帧时间戳）
-              │    └─ 发送线程：单调时钟定拍，每 5 ms 出一个整包；无数据补全 0 静音包
+              │    └─ 发送线程：单调时钟定拍，每 5 ms 出一个整包；无数据等待采集，不合成静音
               └─ LinkController.startStreaming()：HELLO + START，seq 归零
 ```
 
@@ -116,18 +118,17 @@ cd android
   （`releaseProjection()`），**绝不能顺手 `stopForeground`**：否则会丢掉 mediaProjection 前台类型，
   `getMediaProjection` 抛 `SecurityException: Media projections require a foreground service of type …`
   （本机已踩过，见 `AudioCaptureService` 注释）。
-- **200 包/秒是硬节拍**：发送线程用 `SystemClock.elapsedRealtimeNanos` + `LockSupport.parkNanos`
-  按 5 ms 绝对节拍出包；环形缓冲为空时补全 0 静音包，**不降频、不停发**。
-- **分包**：只发 240 帧 / 960 字节整包；短读用 0 补齐到 960 字节，绝不发半包。
+- **正常为 200 包/秒**：发送线程用 BOOTTIME + parkNanos，醒来后循环确认截止时间。环空等待真实采集，由 PC 缓冲吸收短暂等待；不合成伪静音。
+- **分包**：只发 240 帧 / 960 字节整包；短读继续读取直到攒满 960 字节，绝不发半包。
 - **timestampUs = 包内第 0 帧的采样时刻**（不是发送时刻、也不是读取完成时刻）：
-  采集线程每次读满 960 B 后调用 `AudioRecord.getTimestamp(TIMEBASE_MONOTONIC)` 拿到
+  采集线程每次读满 960 B 后调用 `AudioRecord.getTimestamp(TIMEBASE_BOOTTIME)` 拿到
   「帧号 ↔ 单调时钟」锚点，反推首帧时间 `anchorTime − (anchorFrame − firstFrame)/48000`；
   平台不支持或结果明显不合理（与本地时钟偏差 > 200 ms）时退回「读到整包时刻 − 5 ms」。
 - **时间轴平滑**（`PcmRecorder.smoothTimestampUs`）：以「上一包 + 5 ms」为基准，用硬件首帧时间
   做**每包最多 1 ms** 的缓慢校正，偏差 > 100 ms 的锚点直接丢弃。原因：`getTimestamp` 的锚点
   偶发数十毫秒跳变，原始值直接上送会让 PC 的 offset/抖动估计失真（实测未平滑时 ts 间隔
   出现 4 µs ~ 27.5 ms 的毛刺）。平滑后实测 ts 间隔稳定在 **4000–6000 µs，均值 4999.1**。
-- **静音包时间戳 = 上一包 + 5000 µs**（与协议 v1.1 一致），平滑逻辑对静音包即返回该值。
+- AudioRecord 实际采集的静音照常发出；不因应用线程暂时读不到数据而伪造包。
 - **零拷贝**：整链只有两个 960 B 缓冲（采集 chunk、出包 outBuffer）和一个 976 B 发送帧缓冲，
   每包不产生新对象，内存占用稳定。
 
@@ -183,7 +184,7 @@ PC 端自适应抖动缓冲（协议第 6 节）会在此基础上再叠加，�
 
 | # | 要求 | 实现位置 | 状态 |
 | --- | --- | --- | --- |
-| 1 | 会话期间保持 200 包/秒，无数据补全 0 静音包，静音包 ts = 上一包 + 5000 | `PcmRecorder.sendLoop` | ✅ |
+| 1 | 会话期间保持 200 包/秒，无数据等待采集，不合成静音，静音包 ts = 上一包 + 5000 | `PcmRecorder.sendLoop` | ✅ |
 | 2 | 只发 240 帧 / 960 字节，不足补齐，不发半包 | `PcmRecorder.captureLoop`（READ_BLOCKING 攒满 + 短读补 0） | ✅ |
 | 3 | 单 socket 绑定 `0.0.0.0:45678`，全部报文同源；失败提示「端口 45678 被占用」 | `UdpSender.open` | ✅ |
 | 4 | PC 每 2s 发 PING；手机回 PONG（payload=T1 原样，ts=T2，seq=0） | `UdpSender.handlePing` | ✅ |

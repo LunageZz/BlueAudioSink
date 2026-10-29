@@ -15,7 +15,7 @@
 ┌─────────────────────┐         UDP          ┌──────────────────────┐
 │  Android 发送端      │  ────────────────>   │  PC 接收端            │
 │  MediaProjection    │  PCM 48k/16bit/stereo │  UDP 抖动缓冲         │
-│  AudioRecord        │  10 ms/包             │  WasapiOut 播放       │
+│  AudioRecord        │  5 ms/包             │  WasapiOut 播放       │
 │  前台服务           │  PING/PONG 测 RTT     │  延迟/丢包统计         │
 └─────────────────────┘                      └──────────────────────┘
 \`\`\`
@@ -69,4 +69,4 @@
 
 - 蓝牙模式：已完成并可用（含连接重试、资源稳定、设置页）。
 - 预验证：已完成，网易云可被捕获，Wi-Fi 传输 12 秒零断点（见 \`06-preroll-report.md\`）。
-- Wi-Fi 模式：待开发。
+- Wi-Fi 模式：已实现；音频缓冲机制修复与验证见 `08-audio-playout-fix.md`。

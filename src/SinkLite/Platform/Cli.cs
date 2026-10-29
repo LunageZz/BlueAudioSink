@@ -19,6 +19,9 @@ namespace SinkLite.Platform
 
         /// <summary>--lock-output 指定的输出设备名称片段。</summary>
         public string LockOutputName { get; set; }
+
+        /// <summary>--wifi：直接以 Wi-Fi 模式启动，跳过蓝牙自动连接。</summary>
+        public bool Wifi { get; set; }
     }
 
     internal static class Cli
@@ -56,6 +59,9 @@ namespace SinkLite.Platform
                         options.ConnectOnce = true;
                         options.NoTray = true;
                         break;
+                    case "--wifi":
+                        options.Wifi = true;
+                        break;
                     case "--lock-output":
                         if (i + 1 < args.Length && !string.IsNullOrWhiteSpace(args[i + 1]))
                         {
@@ -85,13 +91,14 @@ namespace SinkLite.Platform
         {
             return string.Join(Environment.NewLine, new[]
             {
-                "BlueAudioSink - 让 Windows 电脑接收手机蓝牙音频",
+                "BlueAudioSink - 让 Windows 电脑接收手机音频（蓝牙 / Wi-Fi）",
                 "",
                 "用法：BlueAudioSink [选项]",
                 "",
                 "  （无参数）     启动主窗口（默认）",
                 "  --list         列出可接收的已配对设备后退出",
                 "  --connect      连接后进入监听并输出状态变化（Ctrl+C 退出）",
+                "  --wifi         以 Wi-Fi 模式启动（监听 UDP 45679，广播 45678）",
                 "  --diagnose [秒] 诊断模式：采样并输出三层归因（默认 30 秒）",
                 "  --lock-output 名称片段   把声音输出锁定到匹配的设备（会自动记住）",
                 "  --console      不启动托盘，仅控制台运行",

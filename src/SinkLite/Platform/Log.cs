@@ -111,6 +111,12 @@ namespace SinkLite.Platform
                 return;
             }
 
+            if (value is uint ui)
+            {
+                sb.Append(ui.ToString(CultureInfo.InvariantCulture));
+                return;
+            }
+
             if (value is long l)
             {
                 sb.Append(l.ToString(CultureInfo.InvariantCulture));

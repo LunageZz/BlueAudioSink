@@ -42,9 +42,12 @@ namespace SinkLite.UI
         private const int AreaAutoStart = 301;
         private const int AreaAutoConnect = 302;
         private const int AreaOpenLogs = 303;
+        private const int AreaModeBluetooth = 310;
+        private const int AreaModeWifi = 311;
 
         private readonly SinkController controller;
         private readonly Log log;
+        private readonly WifiController wifi;
 
         private IntPtr hwnd;
         private Win32.WndProcDelegate wndProc;
@@ -69,6 +72,7 @@ namespace SinkLite.UI
         private double scale = 1.0;
         private bool mouseInside;
         private bool settingsMode;
+        private bool wifiMode;
 
         private int selectedDevice;
         private int hoverArea = AreaNone;
@@ -83,10 +87,14 @@ namespace SinkLite.UI
         private Win32.RECT dropdownRect;
         private int dropdownRows;
 
-        public MainWindow(SinkController controller, Log log)
+        public MainWindow(SinkController controller, Log log, bool startWifi)
         {
             this.controller = controller;
             this.log = log;
+
+            Settings settings = Settings.Load();
+            wifi = new WifiController(log, settings.WifiPort, settings.BufferBaseMs, settings.BufferMaxMs);
+            wifiMode = startWifi || string.Equals(settings.Mode, "wifi", StringComparison.OrdinalIgnoreCase);
         }
 
         private int S(int value)
@@ -136,7 +144,21 @@ namespace SinkLite.UI
 
             Win32.SetTimer(hwnd, new IntPtr(IdTimer), 1000, IntPtr.Zero);
             controller.SnapshotChanged += OnSnapshotChanged;
-            log.Info("Ui.Created", ("dpi", (int)dpi), ("scale", scale));
+            log.Info("Ui.Created", ("dpi", (int)dpi), ("scale", scale), ("mode", wifiMode ? "wifi" : "bluetooth"));
+
+            // 启动即进入 Wi-Fi 模式：接收器与发现广播在窗口显示前就绪。
+            // 绑定失败则回退到蓝牙模式，并按既有语义自动连接。
+            if (wifiMode && !wifi.Start())
+            {
+                wifiMode = false;
+                Settings settings = Settings.Load();
+                if (settings.AutoConnect)
+                {
+                    string target = string.IsNullOrEmpty(settings.DeviceId) ? null : settings.DeviceId;
+                    controller.RequestConnect(target);
+                }
+                RequestRepaint(true);
+            }
         }
 
         /// <summary>从嵌入资源加载窗口图标，避免额外文件依赖。</summary>
@@ -250,12 +272,20 @@ namespace SinkLite.UI
         private string BuildPaintKey()
         {
             SinkSnapshot s = controller.Current;
+            WifiSnapshot w = wifi.Current;
             return string.Concat(
                 (int)s.State, "|", s.Detail ?? "", "|", s.DeviceName ?? "", "|",
                 s.Peak.ToString("0.000"), "|", s.Hint ?? "", "|",
                 selectedDevice, "|", hoverArea, "|", pressedArea, "|",
                 dropdownOpen ? 1 : 0, "|", settingsMode ? 1 : 0, "|",
-                controller.Devices.Count, "|", cachedOutputs.Count, "|", cachedPreferredName);
+                controller.Devices.Count, "|", cachedOutputs.Count, "|", cachedPreferredName, "|",
+                wifiMode ? 1 : 0, "|", (int)w.State, "|", w.Enabled ? 1 : 0, "|",
+                w.Detail ?? "", "|", w.Remote ?? "", "|", w.DeviceName ?? "", "|",
+                double.IsNaN(w.RttMs) ? "-1" : Math.Round(w.RttMs).ToString(), "|",
+                w.BufferMs, "|", w.TargetMs, "|",
+                double.IsNaN(w.LatencyMs) ? "-1" : Math.Round(w.LatencyMs).ToString(), "|",
+                double.IsNaN(w.LossPercent) ? "-1" : Math.Round(w.LossPercent, 1).ToString(), "|",
+                w.Received, "|", w.Missing, "|", w.Discontinuities, "|", w.Underruns);
         }
 
         private void OnTimer()
@@ -316,6 +346,8 @@ namespace SinkLite.UI
             public Win32.RECT OutputRect;
             public Win32.RECT BackRect;
             public Win32.RECT LogsButtonRect;
+            public Win32.RECT ModeBluetoothRect;
+            public Win32.RECT ModeWifiRect;
             public int SettingRowsTop;
         }
 
@@ -331,6 +363,16 @@ namespace SinkLite.UI
             m.Height = height;
             m.Left = S(PadX);
             m.ContentWidth = width - S(PadX) * 2;
+
+            // 顶部模式切换：蓝牙 / Wi-Fi，放在标题右侧，避免与状态标题重叠。
+            int modeWidth = S(72);
+            int modeTop = S(20);
+            int modeHeight = S(28);
+            int modeGap = S(4);
+            m.ModeWifiRect = Rect(width - S(PadX) - modeWidth, modeTop,
+                width - S(PadX), modeTop + modeHeight);
+            m.ModeBluetoothRect = Rect(m.ModeWifiRect.Left - modeGap - modeWidth, modeTop,
+                m.ModeWifiRect.Left - modeGap, modeTop + modeHeight);
 
             m.SourceLabelTop = S(HeaderHeight) + S(8);
             m.DeviceListTop = m.SourceLabelTop + S(22);
@@ -420,6 +462,16 @@ namespace SinkLite.UI
                 }
 
                 return AreaNone;
+            }
+
+            if (Contains(m.ModeBluetoothRect, x, y))
+            {
+                return AreaModeBluetooth;
+            }
+
+            if (Contains(m.ModeWifiRect, x, y))
+            {
+                return AreaModeWifi;
             }
 
             if (dropdownOpen)
@@ -530,6 +582,14 @@ namespace SinkLite.UI
 
             switch (area)
             {
+                case AreaModeBluetooth:
+                    SetMode(false);
+                    return;
+
+                case AreaModeWifi:
+                    SetMode(true);
+                    return;
+
                 case AreaOutput:
                     dropdownOpen = !dropdownOpen;
                     RefreshOutputCache(true);
@@ -598,6 +658,69 @@ namespace SinkLite.UI
                     controller.RequestConnect(devices[index].Id);
                     log.Info("Ui.DevicePicked", ("device", devices[index].Name));
                 }
+            }
+        }
+
+        /// <summary>
+        /// 切换蓝牙 / Wi-Fi。两种模式互斥：进入 Wi-Fi 先断开蓝牙，回到蓝牙先停止 Wi-Fi。
+        /// </summary>
+        private void SetMode(bool useWifi)
+        {
+            if (wifiMode == useWifi)
+            {
+                return;
+            }
+
+            if (useWifi)
+            {
+                // 先绑定 Wi-Fi 端口；失败则保持蓝牙不动（协议 §8.1）。
+                if (!wifi.Start())
+                {
+                    RequestRepaint(true);
+                    return;
+                }
+
+                controller.RequestDisconnect();
+                wifiMode = true;
+                SaveMode("wifi");
+            }
+            else
+            {
+                // 先停 Wi-Fi 输出与 socket，再走蓝牙连接（协议 §8.2）。
+                wifi.Stop("bluetooth");
+                wifiMode = false;
+                SaveMode("bluetooth");
+
+                // 与启动时的自动连接语义保持一致；用户仍可手动点"连接"。
+                Settings settings = Settings.Load();
+                if (settings.AutoConnect)
+                {
+                    IReadOnlyList<SinkDevice> devices = controller.Devices;
+                    string deviceId = selectedDevice >= 0 && selectedDevice < devices.Count
+                        ? devices[selectedDevice].Id
+                        : null;
+                    controller.RequestConnect(deviceId);
+                }
+            }
+
+            dropdownOpen = false;
+            RequestRepaint(true);
+        }
+
+        private static void SaveMode(string mode)
+        {
+            try
+            {
+                Settings settings = Settings.Load();
+                if (string.Equals(settings.Mode, mode, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+                settings.Mode = mode;
+                settings.Save();
+            }
+            catch
+            {
             }
         }
 
@@ -733,16 +856,24 @@ namespace SinkLite.UI
                 Win32.RECT full = Rect(0, 0, width, height);
                 Win32.FillRect(hdcMem, ref full, brushBack);
 
-                SinkSnapshot snapshot = controller.Current;
                 Metrics m = ComputeMetrics();
 
                 if (settingsMode)
                 {
                     DrawSettings(hdcMem, m);
                 }
+                else if (wifiMode)
+                {
+                    WifiSnapshot wifiSnapshot = wifi.Current;
+                    DrawHeader(hdcMem, m, wifiSnapshot);
+                    DrawModeTabs(hdcMem, m);
+                    DrawWifiPage(hdcMem, m, wifiSnapshot);
+                }
                 else
                 {
+                    SinkSnapshot snapshot = controller.Current;
                     DrawHeader(hdcMem, m, snapshot);
+                    DrawModeTabs(hdcMem, m);
                     DrawDeviceSection(hdcMem, m, snapshot);
                     DrawOutputSection(hdcMem, m);
                     DrawButtons(hdcMem, m);
@@ -774,30 +905,246 @@ namespace SinkLite.UI
 
         private void DrawHeader(IntPtr hdc, Metrics m, SinkSnapshot snapshot)
         {
-            IntPtr dotBrush = Win32.CreateSolidBrush(StateColor(snapshot.State));
+            string device = string.IsNullOrEmpty(snapshot.DeviceName) ? "无设备" : snapshot.DeviceName;
+            string sub = snapshot.Peak > 0.0005f
+                ? device + "  ·  " + snapshot.Peak.ToString("0.000")
+                : device;
+            DrawHeaderCore(hdc, m, DescribeState(snapshot.State), sub, StateColor(snapshot.State));
+        }
+
+        private void DrawHeader(IntPtr hdc, Metrics m, WifiSnapshot snapshot)
+        {
+            string sub;
+            if (!snapshot.Enabled)
+            {
+                sub = string.IsNullOrEmpty(snapshot.Detail) ? "Wi-Fi 模式未启用" : snapshot.Detail;
+            }
+            else if (!string.IsNullOrEmpty(snapshot.Remote))
+            {
+                sub = "手机 " + snapshot.Remote;
+                if (snapshot.State == SinkState.LinkReady || snapshot.State == SinkState.Flowing)
+                {
+                    sub += "  ·  缓冲 " + snapshot.BufferMs + " / " + snapshot.TargetMs + " ms";
+                }
+            }
+            else
+            {
+                sub = "本机 " + (snapshot.LocalAddress ?? "?") + "  ·  UDP " + snapshot.Port;
+            }
+
+            DrawHeaderCore(hdc, m, DescribeWifiState(snapshot), sub, WifiStateColor(snapshot));
+        }
+
+        private void DrawHeaderCore(IntPtr hdc, Metrics m, string title, string subtitle, int color)
+        {
+            IntPtr dotBrush = Win32.CreateSolidBrush(color);
             IntPtr old = Win32.SelectObject(hdc, dotBrush);
             int dotTop = S(24);
             Win32.Ellipse(hdc, m.Left, dotTop, m.Left + S(12), dotTop + S(12));
             Win32.SelectObject(hdc, old);
             Win32.DeleteObject(dotBrush);
 
+            // 右侧要给模式切换留位，避免标题与"蓝牙 / Wi-Fi"按钮重叠。
+            int textRight = Math.Max(m.Left + S(80), m.ModeBluetoothRect.Left - S(8));
+
             IntPtr oldFont = Win32.SelectObject(hdc, fontTitle);
             Win32.SetTextColor(hdc, Win32.Rgb(24, 24, 24));
-            Win32.RECT titleRect = Rect(m.Left + S(22), S(8), m.Left + m.ContentWidth, S(40));
-            Win32.DrawText(hdc, DescribeState(snapshot.State), -1, ref titleRect,
+            Win32.RECT titleRect = Rect(m.Left + S(22), S(8), textRight, S(40));
+            Win32.DrawText(hdc, title, -1, ref titleRect,
                 Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
 
             Win32.SelectObject(hdc, fontSmall);
             Win32.SetTextColor(hdc, Win32.Rgb(118, 118, 118));
-            Win32.RECT subRect = Rect(m.Left + S(22), S(40), m.Left + m.ContentWidth, S(60));
-            string device = string.IsNullOrEmpty(snapshot.DeviceName) ? "无设备" : snapshot.DeviceName;
-            string sub = snapshot.Peak > 0.0005f
-                ? device + "  ·  " + snapshot.Peak.ToString("0.000")
-                : device;
-            Win32.DrawText(hdc, sub, -1, ref subRect,
+            Win32.RECT subRect = Rect(m.Left + S(22), S(40), textRight, S(60));
+            Win32.DrawText(hdc, subtitle, -1, ref subRect,
                 Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
 
             Win32.SelectObject(hdc, oldFont);
+        }
+
+        private void DrawModeTabs(IntPtr hdc, Metrics m)
+        {
+            DrawModeTab(hdc, m.ModeBluetoothRect, "蓝牙", !wifiMode, AreaModeBluetooth);
+            DrawModeTab(hdc, m.ModeWifiRect, "Wi-Fi", wifiMode, AreaModeWifi);
+        }
+
+        private void DrawModeTab(IntPtr hdc, Win32.RECT rect, string text, bool active, int area)
+        {
+            bool hover = !active && hoverArea == area;
+            bool pressed = pressedArea == area;
+            IntPtr fill;
+            if (active)
+            {
+                fill = pressed ? brushAccentPress : (hover ? brushAccentHover : brushAccent);
+            }
+            else
+            {
+                fill = pressed ? brushBtnPress : (hover ? brushBtnHover : brushCard);
+            }
+
+            RoundFill(hdc, rect, rect.Bottom - rect.Top, fill);
+            if (!active)
+            {
+                RoundBorder(hdc, rect, rect.Bottom - rect.Top, hover ? brushAccent : brushBorder);
+            }
+
+            Win32.SelectObject(hdc, fontSmall);
+            Win32.SetTextColor(hdc, active ? Win32.Rgb(255, 255, 255) : Win32.Rgb(60, 60, 60));
+            Win32.RECT textRect = rect;
+            Win32.DrawText(hdc, text, -1, ref textRect,
+                Win32.DT_CENTER | Win32.DT_VCENTER | Win32.DT_SINGLELINE);
+        }
+
+        private void DrawWifiPage(IntPtr hdc, Metrics m, WifiSnapshot s)
+        {
+            int top = S(HeaderHeight) + S(8);
+            DrawCaption(hdc, "Wi-Fi 接收", m.Left, top);
+
+            int cardTop = top + S(24);
+            int cardBottom = Math.Min(m.Height - S(76), cardTop + S(250));
+            if (cardBottom < cardTop + S(150))
+            {
+                cardBottom = cardTop + S(150);
+            }
+
+            Win32.RECT card = Rect(m.Left, cardTop, m.Left + m.ContentWidth, cardBottom);
+            RoundFill(hdc, card, S(10), brushCard);
+            RoundBorder(hdc, card, S(10), brushBorder);
+
+            int left = card.Left + S(16);
+            int right = card.Right - S(16);
+            int y = card.Top + S(12);
+
+            Win32.SelectObject(hdc, fontSmall);
+            Win32.SetTextColor(hdc, Win32.Rgb(110, 110, 110));
+            string device = string.IsNullOrEmpty(s.DeviceName) ? string.Empty : "（" + s.DeviceName + "）";
+            string remote = string.IsNullOrEmpty(s.Remote) ? "未连接" : s.Remote;
+            DrawWifiLine(hdc, "手机：" + remote + device, left, y, right);
+            y += S(20);
+            DrawWifiLine(hdc, "本机：" + (s.LocalAddress ?? "?") + ":" + s.Port +
+                "   ·   发现广播端口 " + WifiTransport.ControlPort, left, y, right);
+            y += S(26);
+
+            int statWidth = (right - left - S(12)) / 2;
+            DrawWifiStat(hdc, left, y, statWidth, "RTT", FormatMs(s.RttMs));
+            DrawWifiStat(hdc, left + statWidth + S(12), y, statWidth, "缓冲深度",
+                s.BufferMs + " / " + s.TargetMs + " ms");
+            y += S(46);
+            DrawWifiStat(hdc, left, y, statWidth, "估算延迟", FormatMs(s.LatencyMs));
+            DrawWifiStat(hdc, left + statWidth + S(12), y, statWidth, "丢包率",
+                FormatPercent(s.LossPercent));
+            y += S(48);
+
+            int barTop = Math.Min(y, card.Bottom - S(46));
+            Win32.SelectObject(hdc, fontSmall);
+            Win32.SetTextColor(hdc, Win32.Rgb(128, 128, 128));
+            Win32.RECT barLabel = Rect(left, barTop - S(4), right, barTop + S(14));
+            string barText = s.Enabled ? "缓冲（自适应目标 " + s.TargetMs + " ms）" : "缓冲（Wi-Fi 未启用）";
+            Win32.DrawText(hdc, barText, -1, ref barLabel,
+                Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
+
+            int barY = barTop + S(18);
+            Win32.RECT barBack = Rect(left, barY, right, barY + S(6));
+            RoundFill(hdc, barBack, S(3), brushBorder);
+            int capacity = Math.Max(1, s.TargetMs);
+            double ratio = s.BufferMs / (double)capacity;
+            if (ratio > 1.0)
+            {
+                ratio = 1.0;
+            }
+            int fillWidth = (int)Math.Round((right - left) * ratio);
+            if (fillWidth > S(2))
+            {
+                Win32.RECT barFill = Rect(left, barY, left + fillWidth, barY + S(6));
+                RoundFill(hdc, barFill, S(3), brushAccent);
+            }
+
+            Win32.SelectObject(hdc, fontSmall);
+            Win32.SetTextColor(hdc, Win32.Rgb(128, 128, 128));
+            Win32.RECT counterRect = Rect(left, barY + S(10), right, barY + S(28));
+            string counters = "收包 " + s.Received + " · 丢包 " + s.Missing +
+                " · 断流 " + s.Discontinuities + " · 欠载 " + s.Underruns;
+            if (s.Dropped > 0)
+            {
+                counters += " · 溢出丢弃 " + s.Dropped;
+            }
+            Win32.DrawText(hdc, counters, -1, ref counterRect,
+                Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
+
+            int hintTop = card.Bottom + S(10);
+            if (hintTop + S(36) <= m.Height)
+            {
+                Win32.SelectObject(hdc, fontSmall);
+                Win32.SetTextColor(hdc, Win32.Rgb(140, 140, 140));
+                Win32.RECT hint1 = Rect(m.Left, hintTop, m.Left + m.ContentWidth, hintTop + S(18));
+                Win32.RECT hint2 = Rect(m.Left, hintTop + S(18), m.Left + m.ContentWidth, hintTop + S(36));
+                Win32.DrawText(hdc, WifiHint(s), -1, ref hint1,
+                    Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
+                Win32.DrawText(hdc, "蓝牙与 Wi-Fi 互斥：切换模式会先停止当前模式。", -1, ref hint2,
+                    Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
+            }
+        }
+
+        private void DrawWifiLine(IntPtr hdc, string text, int left, int top, int right)
+        {
+            Win32.RECT rect = Rect(left, top, right, top + S(18));
+            Win32.DrawText(hdc, text, -1, ref rect,
+                Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
+        }
+
+        private void DrawWifiStat(IntPtr hdc, int left, int top, int width, string label, string value)
+        {
+            Win32.SelectObject(hdc, fontSmall);
+            Win32.SetTextColor(hdc, Win32.Rgb(128, 128, 128));
+            Win32.RECT labelRect = Rect(left, top, left + width, top + S(16));
+            Win32.DrawText(hdc, label, -1, ref labelRect,
+                Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE);
+
+            Win32.SelectObject(hdc, fontTitle);
+            Win32.SetTextColor(hdc, Win32.Rgb(32, 32, 32));
+            Win32.RECT valueRect = Rect(left, top + S(16), left + width, top + S(40));
+            Win32.DrawText(hdc, value, -1, ref valueRect,
+                Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
+        }
+
+        private static string FormatMs(double value)
+        {
+            if (double.IsNaN(value) || value < 0)
+            {
+                return "—";
+            }
+            return value.ToString("0") + " ms";
+        }
+
+        private static string FormatPercent(double value)
+        {
+            if (double.IsNaN(value))
+            {
+                return "—";
+            }
+            return value.ToString("0.0") + " %";
+        }
+
+        private static string WifiHint(WifiSnapshot s)
+        {
+            if (!s.Enabled)
+            {
+                return s.Detail ?? "Wi-Fi 模式未启用。";
+            }
+
+            switch (s.State)
+            {
+                case SinkState.Flowing:
+                    return "接收中；手机停止后会播放完缓冲再回到待机。";
+                case SinkState.LinkReady:
+                    return "正在预缓冲/重缓冲，攒够目标缓冲后自动播放。";
+                case SinkState.Faulted:
+                    return string.IsNullOrEmpty(s.Detail) ? "Wi-Fi 故障，请重新选择 Wi-Fi 模式。" : s.Detail;
+                case SinkState.Busy:
+                    return "正在切换模式，请稍候。";
+                default:
+                    return "正在广播设备名，请在手机 App 中选择本机；5 秒无音频自动待机。";
+            }
         }
 
         private void DrawDeviceSection(IntPtr hdc, Metrics m, SinkSnapshot snapshot)
@@ -1083,6 +1430,35 @@ namespace SinkLite.UI
         private static bool Contains(Win32.RECT r, int x, int y)
         {
             return x >= r.Left && x < r.Right && y >= r.Top && y < r.Bottom;
+        }
+
+        private static int WifiStateColor(WifiSnapshot snapshot)
+        {
+            if (!snapshot.Enabled || snapshot.State == SinkState.Idle)
+            {
+                return Win32.Rgb(150, 150, 150);
+            }
+
+            return StateColor(snapshot.State);
+        }
+
+        private static string DescribeWifiState(WifiSnapshot snapshot)
+        {
+            if (!snapshot.Enabled)
+            {
+                return "Wi-Fi 未启用";
+            }
+
+            switch (snapshot.State)
+            {
+                case SinkState.Busy: return "正在切换模式";
+                case SinkState.Armed: return "等待手机连接";
+                case SinkState.LinkReady: return "正在缓冲";
+                case SinkState.Flowing: return "正在接收 Wi-Fi 音频";
+                case SinkState.Faulted: return "Wi-Fi 故障";
+                case SinkState.Backoff: return "Wi-Fi 重试中";
+                default: return "Wi-Fi 未启用";
+            }
         }
 
         private static int StateColor(SinkState state)

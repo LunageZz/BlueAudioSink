@@ -216,6 +216,10 @@ namespace SinkLite
 
         private static int RunWindow(SinkController controller, CliOptions options)
         {
+            Settings settings = Settings.Load();
+            bool wifiStart = options.Wifi ||
+                string.Equals(settings.Mode, "wifi", StringComparison.OrdinalIgnoreCase);
+
             // 刻意不在这里 WaitForDevices：
             // 设备枚举在后台线程进行，窗口应当先显示出来，设备列表随后自动填充。
             // 阻塞等待会让启动速度直接受蓝牙枚举耗时影响（曾导致数百毫秒到数秒的白等）。
@@ -230,15 +234,15 @@ namespace SinkLite
                     log.Info("Route.LockArgument", ("requested", options.LockOutputName), ("matched", hit ?? "(未命中)"));
                 }
 
-                using (SinkLite.UI.MainWindow window = new SinkLite.UI.MainWindow(controller, log))
+                using (SinkLite.UI.MainWindow window = new SinkLite.UI.MainWindow(controller, log, wifiStart))
                 {
                     window.Create();
                     window.ShowWindow();
-                    log.Info("Window.Starting", ("devices", controller.Devices.Count));
+                    log.Info("Window.Starting", ("devices", controller.Devices.Count), ("mode", wifiStart ? "wifi" : "bluetooth"));
 
-                    // 先显示窗口，再发起自动连接：连接过程不占用首帧时间
-                    Settings settings = Settings.Load();
-                    if (settings.AutoConnect)
+                    // 先显示窗口，再发起自动连接：连接过程不占用首帧时间。
+                    // Wi-Fi 模式下不自动连接蓝牙，两种模式互斥。
+                    if (!wifiStart && settings.AutoConnect)
                     {
                         string target = string.IsNullOrEmpty(settings.DeviceId) ? null : settings.DeviceId;
                         controller.RequestConnect(target);

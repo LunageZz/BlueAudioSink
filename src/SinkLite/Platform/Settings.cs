@@ -19,6 +19,18 @@ namespace SinkLite.Platform
         /// <summary>首选输出端点 ID。非空时程序会把默认输出锁定在它上面。</summary>
         public string PreferredRenderId { get; set; } = string.Empty;
 
+        /// <summary>启动模式："bluetooth" 或 "wifi"。</summary>
+        public string Mode { get; set; } = "bluetooth";
+
+        /// <summary>Wi-Fi 音频接收端口（UDP）。</summary>
+        public int WifiPort { get; set; } = 45679;
+
+        /// <summary>Wi-Fi 抖动缓冲下限，毫秒。</summary>
+        public int BufferBaseMs { get; set; } = 40;
+
+        /// <summary>Wi-Fi 抖动缓冲上限，毫秒。</summary>
+        public int BufferMaxMs { get; set; } = 200;
+
         public static string FilePath
         {
             get
@@ -75,11 +87,49 @@ namespace SinkLite.Platform
                                 settings.SampleSeconds = seconds;
                             }
                             break;
+                        case "mode":
+                            if (value.Equals("wifi", StringComparison.OrdinalIgnoreCase))
+                            {
+                                settings.Mode = "wifi";
+                            }
+                            else if (value.Equals("bluetooth", StringComparison.OrdinalIgnoreCase) ||
+                                     value.Equals("bt", StringComparison.OrdinalIgnoreCase))
+                            {
+                                settings.Mode = "bluetooth";
+                            }
+                            break;
+                        case "wifiport":
+                            int wifiPort;
+                            if (int.TryParse(value, out wifiPort) && wifiPort >= 1024 && wifiPort <= 65535)
+                            {
+                                settings.WifiPort = wifiPort;
+                            }
+                            break;
+                        case "bufferbasems":
+                            int bufferBase;
+                            if (int.TryParse(value, out bufferBase) && bufferBase >= 10 && bufferBase <= 800)
+                            {
+                                settings.BufferBaseMs = bufferBase;
+                            }
+                            break;
+                        case "buffermaxms":
+                            int bufferMax;
+                            if (int.TryParse(value, out bufferMax) && bufferMax >= 40 && bufferMax <= 1000)
+                            {
+                                settings.BufferMaxMs = bufferMax;
+                            }
+                            break;
                     }
                 }
             }
             catch
             {
+            }
+
+            // 允许用户把上限改得比下限还小：以本文件中的修正为准，保证缓冲算法参数合法。
+            if (settings.BufferMaxMs < settings.BufferBaseMs)
+            {
+                settings.BufferMaxMs = settings.BufferBaseMs;
             }
 
             return settings;
@@ -98,6 +148,10 @@ namespace SinkLite.Platform
                 sb.AppendLine("autoconnect=" + (AutoConnect ? "1" : "0"));
                 sb.AppendLine("sampleseconds=" + SampleSeconds);
                 sb.AppendLine("preferredrenderid=" + (PreferredRenderId ?? string.Empty));
+                sb.AppendLine("mode=" + (Mode ?? "bluetooth"));
+                sb.AppendLine("wifiport=" + WifiPort);
+                sb.AppendLine("bufferbasems=" + BufferBaseMs);
+                sb.AppendLine("buffermaxms=" + BufferMaxMs);
                 File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
             }
             catch

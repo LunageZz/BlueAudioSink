@@ -26,7 +26,7 @@ namespace SinkLite.Platform
         public int WifiPort { get; set; } = 45679;
 
         /// <summary>Wi-Fi 抖动缓冲下限，毫秒。</summary>
-        public int BufferBaseMs { get; set; } = 40;
+        public int BufferBaseMs { get; set; } = 80;
 
         /// <summary>Wi-Fi 抖动缓冲上限，毫秒。</summary>
         public int BufferMaxMs { get; set; } = 200;

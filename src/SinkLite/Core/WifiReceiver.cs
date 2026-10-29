@@ -1013,7 +1013,9 @@ namespace SinkLite.Core
             jitterUs = jitterSamples.Count > 0 ? sum / jitterSamples.Count : 0;
 
             int targetUs = (int)Math.Round(40000 + 4.0 * jitterUs);
-            targetUs = Math.Clamp(targetUs, 40000, maxMs * 1000);
+            // 下限 60ms：40ms 在实测中仍会偶发欠载（underrun），
+            // 按「优先稳定」原则抬高下限，代价约 +20ms 延迟。
+            targetUs = Math.Clamp(targetUs, (int)Math.Max(60000L, baseMs * 1000L / 2), maxMs * 1000);
             targetMs = (int)Math.Round(targetUs / 1000.0);
 
             // 播放中按“当前深度 D”调整；预缓冲/重缓冲期间只更新 lastTarget。

@@ -32,3 +32,18 @@ artifacts/
 # 操作系统
 Thumbs.db
 desktop.ini
+
+# ===== Android 端 =====
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/captures/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# ===== 验证工具（不入库）=====
+tools/scrcpy/

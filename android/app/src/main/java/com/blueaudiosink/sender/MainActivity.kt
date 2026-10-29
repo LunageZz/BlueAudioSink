@@ -74,8 +74,9 @@ class MainActivity : ComponentActivity() {
                             AudioCaptureService.stopIntent(this),
                         )
                     },
-                    onSelectDevice = { device -> LinkController.connect(device.ip, device.port) },
+                    onConnect = { ip, port -> LinkController.connect(ip, port) },
                     onConnectManual = { ip -> LinkController.connect(ip) },
+                    onRemoveSaved = { ip -> LinkController.removeSavedDevice(ip) },
                     onTierChange = { tier -> LinkController.setTier(tier) },
                     onDismissMessage = { LinkController.clearMessage() },
                     onRefreshDiscovery = { LinkController.restartDiscovery(this) },

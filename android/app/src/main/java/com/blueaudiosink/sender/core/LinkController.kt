@@ -46,6 +46,14 @@ object LinkController : UdpSender.Listener {
     private var discovery: DiscoveryClient? = null
     private var discoveryActive = false
 
+    /** 已连接设备的本地记忆（SharedPreferences + JSON）。 */
+    @Volatile
+    private var savedStore: SavedDeviceStore? = null
+
+    /** 本次连接已写入记忆的 IP，避免每个 PING 都重复落盘。 */
+    @Volatile
+    private var savedForIp: String? = null
+
     @Volatile
     private var streaming: Boolean = false
 
@@ -59,7 +67,18 @@ object LinkController : UdpSender.Listener {
     // ---------------------------------------------------------------- 生命周期
 
     fun attach(context: Context) {
-        appContext = context.applicationContext
+        val app = context.applicationContext
+        appContext = app
+        if (savedStore == null) {
+            synchronized(this) {
+                if (savedStore == null) {
+                    val store = SavedDeviceStore(app)
+                    savedStore = store
+                    val saved = store.load()
+                    _state.update { it.copy(savedDevices = saved) }
+                }
+            }
+        }
     }
 
     fun setDeviceName(name: String) {
@@ -111,8 +130,11 @@ object LinkController : UdpSender.Listener {
         lastPingAtMs = 0
         pingReceived = 0
         pingMissed = 0
+        // 新目标：首个 PING 到达时重新写入记忆（刷新「最近使用」时间）
+        savedForIp = null
 
         val knownName = _state.value.devices.firstOrNull { it.ip == host }?.name
+            ?: _state.value.savedDevices.firstOrNull { it.ip == host }?.name
         _state.update {
             it.copy(
                 targetIp = host,
@@ -130,6 +152,7 @@ object LinkController : UdpSender.Listener {
     fun disconnect() {
         sender?.clearTarget()
         lastPingAtMs = 0
+        savedForIp = null
         streaming = false
         _state.update {
             it.copy(
@@ -146,6 +169,17 @@ object LinkController : UdpSender.Listener {
 
     fun setTier(tier: BufferTier) {
         _state.update { it.copy(tier = tier) }
+    }
+
+    /** 从「已保存设备」里删除一台（不影响当前连接）。 */
+    fun removeSavedDevice(ip: String) {
+        val store = savedStore ?: return
+        val host = ip.trim()
+        val remaining = store.remove(host)
+        // 删的正是当前连接时，本会话内不再自动写回：否则下一个 PING（2 秒内）又把它存回来。
+        // 用户重新点一次该设备（connect 会清空 savedForIp）才会再次记住。
+        if (host == _state.value.targetIp) savedForIp = host
+        _state.update { it.copy(savedDevices = remaining) }
     }
 
     // ---------------------------------------------------------------- 发送（由前台服务驱动）
@@ -211,6 +245,11 @@ object LinkController : UdpSender.Listener {
         if (device.ip == _state.value.targetIp) {
             sender?.setTarget(device.ip, device.port)
             _state.update { it.copy(targetName = device.name, targetPort = device.port) }
+            // 已保存的设备拿到真实名称后同步更新（名称比 IP 更好认）；
+            // 只在它确实还在记忆列表里时更新，避免刚删掉的设备被一次广播写回来。
+            if (_state.value.savedDevices.any { it.ip == device.ip }) {
+                rememberTarget(device.ip, device.port, device.name, refresh = true)
+            }
         }
     }
 
@@ -226,6 +265,11 @@ object LinkController : UdpSender.Listener {
         lastPingAtMs = now
         pingReceived++
         val hasTarget = _state.value.targetIp != null
+        // 收到首包 = 连接成功：把当前目标写入本地记忆（之后从列表直接点连）
+        if (hasTarget) {
+            val current = _state.value
+            rememberTarget(current.targetIp.orEmpty(), current.targetPort, current.targetName)
+        }
         _state.update {
             it.copy(
                 phase = when {
@@ -266,6 +310,27 @@ object LinkController : UdpSender.Listener {
     }
 
     // ---------------------------------------------------------------- 内部
+
+    /**
+     * 把当前目标写入本地记忆。
+     *
+     * 触发时机：首次收到 PC 的 PING（= 连接成功）。
+     * 同一 IP 只写一次；[refresh] 用于发现到同名设备时更新名称。
+     */
+    private fun rememberTarget(ip: String, port: Int, name: String?, refresh: Boolean = false) {
+        val host = ip.trim()
+        if (host.isEmpty()) return
+        val store = savedStore ?: return
+        val label = name?.trim().orEmpty().ifBlank { host }
+        if (savedForIp == host) {
+            if (!refresh) return
+            val existing = _state.value.savedDevices.firstOrNull { it.ip == host }
+            if (existing != null && existing.name == label && existing.port == port) return
+        }
+        savedForIp = host
+        val saved = store.remember(label, host, port)
+        _state.update { it.copy(savedDevices = saved) }
+    }
 
     @Synchronized
     private fun ensureSocket(): Boolean {

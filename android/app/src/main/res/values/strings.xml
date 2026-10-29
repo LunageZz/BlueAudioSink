@@ -8,40 +8,29 @@
     <string name="status_disconnected">未连接</string>
     <string name="status_connected">已连接</string>
     <string name="status_streaming">发送中</string>
-    <string name="target_none">尚未选择电脑</string>
-    <string name="unit_packets">包</string>
 
-    <!-- 目标电脑 -->
-    <string name="target_title">目标电脑</string>
-    <string name="device_empty">未发现电脑。请确认电脑端已开启 Wi-Fi 模式并放行防火墙，或手动输入 IP。</string>
-    <string name="device_selected">已选</string>
-    <string name="manual_ip_label">电脑 IP</string>
-    <string name="manual_ip_hint">例如 192.168.1.10</string>
+    <!-- 设备 -->
+    <string name="device_empty">未发现设备</string>
+    <string name="device_last_used">上次使用</string>
+    <string name="action_manual_add">+ 手动添加</string>
+    <string name="manual_ip_hint">192.168.1.10</string>
     <string name="action_connect">连接</string>
     <string name="action_refresh">刷新</string>
+    <string name="action_delete">删除</string>
 
     <!-- 缓冲档位 -->
     <string name="tier_title">缓冲档位</string>
     <string name="tier_low">低延迟</string>
     <string name="tier_balanced">平衡</string>
     <string name="tier_stable">稳定</string>
-    <string name="tier_desc_low">预填充约 10 ms，延迟最低；采集线程被调度延迟时可能补静音。</string>
-    <string name="tier_desc_balanced">预填充约 25 ms，延迟与稳定性的默认折中。</string>
-    <string name="tier_desc_stable">预填充约 50 ms，最抗抖动，代价是端到端延迟更高。</string>
 
     <!-- 主按钮 -->
     <string name="action_start">开始发送</string>
     <string name="action_stop">停止发送</string>
 
     <!-- 底部指标 -->
-    <string name="stats_latency">实时延迟</string>
     <string name="stats_loss">丢包率</string>
     <string name="stats_packets">已发送</string>
-    <string name="value_on_pc">见电脑端</string>
-
-    <!-- 授权提示 -->
-    <string name="consent_hint">Android 要求每次开始发送都由你在系统弹出的「开始录制或投放」对话框中手动确认；该授权一次性有效，停止后需重新确认，无法跳过。</string>
-    <string name="stats_hint">实时延迟与缓冲深度请在电脑端查看。手机端显示控制通道丢包率与已发包数。</string>
 
     <!-- 通知 -->
     <string name="notification_channel_name">音频发送</string>
@@ -51,15 +40,15 @@
     <string name="notification_streaming">正在向电脑发送音频</string>
 
     <!-- 错误与提示 -->
-    <string name="error_no_target">请先选择或输入电脑 IP</string>
-    <string name="error_permissions_required">需要录音与通知权限才能开始发送</string>
-    <string name="error_consent_cancelled">未获得录屏授权，已取消发送</string>
-    <string name="error_projection_unavailable">当前设备不支持录屏授权</string>
-    <string name="error_no_projection">缺少授权数据，请重新开始</string>
+    <string name="error_no_target">请先选择电脑</string>
+    <string name="error_permissions_required">缺少录音或通知权限</string>
+    <string name="error_consent_cancelled">已取消发送</string>
+    <string name="error_projection_unavailable">设备不支持录屏授权</string>
+    <string name="error_no_projection">授权数据缺失</string>
     <string name="error_projection_denied">系统拒绝了录屏授权</string>
     <string name="error_projection_stopped">系统已停止录屏授权</string>
-    <string name="error_record_permission">缺少录音权限，无法捕获音频</string>
-    <string name="error_recorder_build">无法创建音频采集器（设备可能不支持内录）</string>
+    <string name="error_record_permission">缺少录音权限</string>
+    <string name="error_recorder_build">无法创建音频采集器</string>
     <string name="error_recorder_start">音频采集启动失败</string>
     <string name="error_recorder_read">音频采集中断</string>
 </resources>

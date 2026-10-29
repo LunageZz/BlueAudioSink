@@ -13,6 +13,8 @@ data class SenderUiState(
     val targetIp: String? = null,
     val targetPort: Int = 45_679,
     val devices: List<DiscoveredDevice> = emptyList(),
+    /** 已记住的设备，按最近使用倒序，最多 [SavedDeviceStore.MAX_DEVICES] 台。 */
+    val savedDevices: List<SavedDevice> = emptyList(),
     /** 最近一次 PING/PONG 的往返时延，-1 表示还没测到。 */
     val rttMs: Int = -1,
     /** 探测丢包率（千分比），888 表示 88.8%。 */

@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -46,22 +45,30 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.blueaudiosink.sender.R
 import com.blueaudiosink.sender.capture.BufferTier
 import com.blueaudiosink.sender.core.LinkPhase
 import com.blueaudiosink.sender.core.SenderUiState
-import com.blueaudiosink.sender.net.DiscoveredDevice
+import com.blueaudiosink.sender.net.PacketCodec
 import java.util.Locale
 
 /**
- * 单页界面：状态 → 目标电脑 → 缓冲档位 → 开始/停止 → 底部 RTT/丢包。
- * 所有文案来自 res/values/strings.xml，字号用 sp、间距用 dp，随系统 DPI 自适应。
+ * 单页界面（自上而下）：
+ * 状态卡（一行）→ 设备列表（已保存在前 + 发现到的）→「+ 手动添加」次要入口 →
+ * 缓冲档位（三个胶囊）→ 开始/停止 → 底部两个数值。
+ *
+ * 文案原则：只保留标签与数值，不放解释性长句；所有文字来自 res/values/strings.xml。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,8 +76,9 @@ fun SenderScreen(
     state: SenderUiState,
     onStart: () -> Unit,
     onStop: () -> Unit,
-    onSelectDevice: (DiscoveredDevice) -> Unit,
+    onConnect: (String, Int) -> Unit,
     onConnectManual: (String) -> Unit,
+    onRemoveSaved: (String) -> Unit,
     onTierChange: (BufferTier) -> Unit,
     onDismissMessage: () -> Unit,
     onRefreshDiscovery: () -> Unit,
@@ -85,6 +93,7 @@ fun SenderScreen(
     }
 
     var manualIp by rememberSaveable { mutableStateOf(state.targetIp.orEmpty()) }
+    var manualOpen by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(state.targetIp) {
         val ip = state.targetIp
         if (!ip.isNullOrBlank()) manualIp = ip
@@ -109,29 +118,25 @@ fun SenderScreen(
                     .weight(1f)
                     .verticalScroll(rememberScrollState())
                     .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 StatusCard(state)
-                TargetSection(
+                DeviceSection(
                     state = state,
                     manualIp = manualIp,
+                    manualOpen = manualOpen,
                     onManualIpChange = { manualIp = it },
-                    onSelectDevice = onSelectDevice,
-                    onConnectManual = onConnectManual,
+                    onManualToggle = { manualOpen = !manualOpen },
+                    onConnect = onConnect,
+                    onConnectManual = {
+                        onConnectManual(manualIp)
+                        manualOpen = false
+                    },
+                    onRemoveSaved = onRemoveSaved,
                     onRefreshDiscovery = onRefreshDiscovery,
                 )
                 TierSection(state.tier, onTierChange)
                 PrimaryButton(state, onStart, onStop)
-                Text(
-                    text = stringResource(R.string.consent_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    text = stringResource(R.string.stats_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
             StatsBar(state)
         }
@@ -150,113 +155,166 @@ private fun StatusCard(state: SenderUiState) {
         LinkPhase.CONNECTED -> stringResource(R.string.status_connected)
         LinkPhase.IDLE -> stringResource(R.string.status_disconnected)
     }
-    val targetText = if (state.targetIp.isNullOrBlank()) {
-        stringResource(R.string.target_none)
-    } else {
-        (state.targetName ?: state.targetIp) + "  ·  " + state.targetIp
+    val deviceText = state.targetIp?.let { ip ->
+        state.targetName?.takeIf { it.isNotBlank() && it != ip } ?: ip
     }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(14.dp).background(dotColor, CircleShape))
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    text = statusText,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(Modifier.weight(1f))
-                if (state.phase == LinkPhase.STREAMING) {
-                    Text(
-                        text = state.packetsSent.toString() + " " + stringResource(R.string.unit_packets),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+            Box(Modifier.size(12.dp).background(dotColor, CircleShape))
+            Spacer(Modifier.width(10.dp))
             Text(
-                text = targetText,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                text = statusText,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
             )
+            if (!deviceText.isNullOrBlank()) {
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    text = deviceText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
     }
 }
 
+/** 列表项：已保存设备与广播发现到的设备合并后的展示模型。 */
+private data class DeviceItem(
+    val ip: String,
+    val port: Int,
+    val name: String,
+    val saved: Boolean,
+    val lastUsed: Boolean,
+)
+
 @Composable
-private fun TargetSection(
+private fun DeviceSection(
     state: SenderUiState,
     manualIp: String,
+    manualOpen: Boolean,
     onManualIpChange: (String) -> Unit,
-    onSelectDevice: (DiscoveredDevice) -> Unit,
-    onConnectManual: (String) -> Unit,
+    onManualToggle: () -> Unit,
+    onConnect: (String, Int) -> Unit,
+    onConnectManual: () -> Unit,
+    onRemoveSaved: (String) -> Unit,
     onRefreshDiscovery: () -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    val items = remember(state.savedDevices, state.devices) { mergeDevices(state) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (items.isEmpty()) {
             Text(
-                text = stringResource(R.string.target_title),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
+                text = stringResource(R.string.device_empty),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 4.dp),
             )
+        } else {
+            items.forEach { item ->
+                DeviceRow(
+                    item = item,
+                    selected = item.ip == state.targetIp,
+                    onClick = { onConnect(item.ip, item.port) },
+                    onRemove = { onRemoveSaved(item.ip) },
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onManualToggle) {
+                Text(stringResource(R.string.action_manual_add))
+            }
+            Spacer(Modifier.weight(1f))
             TextButton(onClick = onRefreshDiscovery) {
                 Text(stringResource(R.string.action_refresh))
             }
         }
-        if (state.devices.isEmpty()) {
-            Text(
-                text = stringResource(R.string.device_empty),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                state.devices.forEach { device ->
-                    DeviceRow(
-                        device = device,
-                        selected = device.ip == state.targetIp,
-                        onClick = { onSelectDevice(device) },
-                    )
-                }
-            }
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            OutlinedTextField(
-                value = manualIp,
-                onValueChange = onManualIpChange,
-                modifier = Modifier.weight(1f),
-                label = { Text(stringResource(R.string.manual_ip_label)) },
-                placeholder = { Text(stringResource(R.string.manual_ip_hint)) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Text,
-                    imeAction = ImeAction.Done,
-                ),
-                keyboardActions = KeyboardActions(onDone = { onConnectManual(manualIp) }),
-            )
-            Button(
-                onClick = { onConnectManual(manualIp) },
-                enabled = manualIp.isNotBlank(),
+
+        if (manualOpen) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text(stringResource(R.string.action_connect))
+                OutlinedTextField(
+                    value = manualIp,
+                    onValueChange = onManualIpChange,
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text(stringResource(R.string.manual_ip_hint)) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Text,
+                        imeAction = ImeAction.Done,
+                    ),
+                    keyboardActions = KeyboardActions(onDone = { onConnectManual() }),
+                )
+                Button(
+                    onClick = onConnectManual,
+                    enabled = manualIp.isNotBlank(),
+                ) {
+                    Text(stringResource(R.string.action_connect))
+                }
             }
         }
     }
 }
 
+private fun mergeDevices(state: SenderUiState): List<DeviceItem> {
+    val saved = state.savedDevices
+    val savedIps = saved.mapTo(HashSet()) { it.ip }
+    val result = ArrayList<DeviceItem>(saved.size + state.devices.size)
+    saved.forEachIndexed { index, device ->
+        result.add(
+            DeviceItem(
+                ip = device.ip,
+                port = device.port,
+                name = device.name,
+                saved = true,
+                lastUsed = index == 0,
+            ),
+        )
+    }
+    state.devices.forEach { device ->
+        if (device.ip !in savedIps) {
+            result.add(
+                DeviceItem(
+                    ip = device.ip,
+                    port = device.port,
+                    name = device.name,
+                    saved = false,
+                    lastUsed = false,
+                ),
+            )
+        }
+    }
+    return result
+}
+
 @Composable
-private fun DeviceRow(device: DiscoveredDevice, selected: Boolean, onClick: () -> Unit) {
+private fun DeviceRow(
+    item: DeviceItem,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    val deleteLabel = stringResource(R.string.action_delete)
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -271,25 +329,76 @@ private fun DeviceRow(device: DiscoveredDevice, selected: Boolean, onClick: () -
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onClick)
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .background(
+                        if (item.saved) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                        },
+                        CircleShape,
+                    ),
+            )
             Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(device.name, style = MaterialTheme.typography.bodyLarge)
-                Text(
-                    text = device.ip + ":" + device.port,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            val address = if (item.port == PacketCodec.DEFAULT_AUDIO_PORT) {
+                item.ip
+            } else {
+                item.ip + ":" + item.port
             }
-            if (selected) {
+            val named = item.name.isNotBlank() && item.name != item.ip
+            Column(Modifier.weight(1f)) {
+                if (named) {
+                    Text(
+                        text = item.name,
+                        style = MaterialTheme.typography.bodyLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = address,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                } else {
+                    // 没有电脑名时只显示地址，避免同一行重复两次 IP
+                    Text(
+                        text = address,
+                        style = MaterialTheme.typography.bodyLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (item.lastUsed) {
                 Text(
-                    text = stringResource(R.string.device_selected),
-                    style = MaterialTheme.typography.labelMedium,
+                    text = stringResource(R.string.device_last_used),
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
+                Spacer(Modifier.width(4.dp))
+            }
+            if (item.saved) {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onRemove)
+                        .semantics { contentDescription = deleteLabel },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "✕",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
@@ -298,7 +407,7 @@ private fun DeviceRow(device: DiscoveredDevice, selected: Boolean, onClick: () -
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TierSection(tier: BufferTier, onTierChange: (BufferTier) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             text = stringResource(R.string.tier_title),
             style = MaterialTheme.typography.titleMedium,
@@ -317,11 +426,6 @@ private fun TierSection(tier: BufferTier, onTierChange: (BufferTier) -> Unit) {
                 )
             }
         }
-        Text(
-            text = stringResource(tier.descriptionRes),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
@@ -355,11 +459,9 @@ private fun StatsBar(state: SenderUiState) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
                 .padding(horizontal = 24.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
-            StatItem(stringResource(R.string.stats_latency), stringResource(R.string.value_on_pc))
             StatItem(stringResource(R.string.stats_loss), lossText)
             StatItem(stringResource(R.string.stats_packets), state.packetsSent.toString())
         }

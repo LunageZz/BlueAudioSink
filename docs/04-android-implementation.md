@@ -38,6 +38,7 @@ android/
          ├─ MainActivity.kt             # 单 Activity：权限 → 授权 → 启动前台服务
          ├─ core/
          │  ├─ LinkController.kt        # 应用级连接状态 + 唯一 UDP 通道入口
+         │  ├─ SavedDeviceStore.kt      # 已连接设备记忆（SharedPreferences + JSON）
          │  └─ UiState.kt               # SenderUiState / LinkPhase
          ├─ capture/
          │  ├─ MediaProjectionHelper.kt # 运行时权限、录屏授权 Intent
@@ -49,7 +50,7 @@ android/
          │  ├─ UdpSender.kt             # 唯一 socket（45678）：收 OFFER/PING，发 PONG/HELLO/START/STOP/AUDIO
          │  └─ DiscoveryClient.kt       # OFFER 设备表 + 6 秒过期
          └─ ui/
-            ├─ SenderScreen.kt          # 单页 Compose 界面
+            ├─ SenderScreen.kt          # 单页 Compose 界面（状态卡 / 设备列表 / 档位 / 主按钮 / 底部指标）
             └─ Theme.kt                 # Material3 主题
 ```
 
@@ -188,20 +189,46 @@ PC 端自适应抖动缓冲（协议第 6 节）会在此基础上再叠加，�
 | 4 | PC 每 2s 发 PING；手机回 PONG（payload=T1 原样，ts=T2，seq=0） | `UdpSender.handlePing` | ✅ |
 | 5 | 文档写明实际包名 | 本文第 0 节：`com.blueaudiosink.sender` | ✅ |
 
-## 6. UI 结构（单页，全中文）
+## 6. UI 结构（单页，全中文，只保留必要文案）
+
+设计原则：**界面上不出现超过一行的解释性文字**。长句说明全部删除，必要信息只用短标签 + 数值表达
+（档位只有「低延迟 / 平衡 / 稳定」三个词；底部只有两个数字）。
 
 | 区块 | 内容 |
 | --- | --- |
 | 顶部栏 | 「蓝音频 · 发送端」 |
-| 状态卡 | 未连接（灰）/ 已连接（绿）/ 发送中（蓝）+ 目标电脑 + 发送中显示包数 |
-| 目标电脑 | 发现列表（点选即连接，显示 `名称 / IP:端口`）+ 手动输入 IP + 连接按钮 + 刷新 |
-| 缓冲档位 | Material3 分段按钮：低延迟 / 平衡 / 稳定 + 当前档位说明 |
-| 主按钮 | 开始发送（蓝）/ 停止发送（红），高 72 dp |
-| 底部指标 | 实时延迟「见电脑端」/ 丢包率 / 已发送，底部导航栏安全区内 |
-| 提示 | 录屏授权每次需手动确认；PING 由电脑端发起，RTT 在电脑端测量 |
+| 状态卡 | 一行：状态点 + 未连接（灰）/ 已连接（绿）/ 发送中（蓝）+ 当前设备名（未选设备时留空） |
+| 设备列表 | 已保存设备在前（最近使用的一台带「上次使用」标记，✕ 可删除），广播发现到的设备在后；一台都没有时只显示「未发现设备」 |
+| 次要入口 | 列表底部一行：「+ 手动添加」→ 展开 IP 输入框 + 连接按钮（连接后自动收起），右侧「刷新」 |
+| 缓冲档位 | Material3 分段按钮：低延迟 / 平衡 / 稳定（**无说明文字**） |
+| 主按钮 | 开始发送（蓝）/ 停止发送（红），高 72 dp；未选设备时禁用 |
+| 底部指标 | 丢包率 / 已发送，两个数值，已去掉「实时延迟 · 见电脑端」栏位 |
 
 - 字号全部 `sp`、间距全部 `dp`，Compose 按系统 DPI/字体缩放自适应；深色模式跟随系统。
 - 状态由 `LinkController.state: StateFlow<SenderUiState>` 驱动，Activity 与服务同进程共享。
+- 底部指标栏**不要**再加 `navigationBarsPadding()`：Scaffold 的 `innerPadding` 已包含系统栏高度，
+  重复添加会把「丢包率 / 已发送」挤出屏幕底部（本机已踩过）。
+
+### 6.1 已连接设备记忆
+
+目的：广播发现经常被路由器过滤，手动输入的 IP 不应每次重输。
+
+| 项 | 实现 |
+| --- | --- |
+| 存储 | `SharedPreferences`（文件 `blueaudio_sender`，键 `saved_devices`），一个字符串存整个 JSON 数组 |
+| 格式 | `[{"name":"客厅电脑","ip":"192.168.0.165","port":45679,"lastUsed":1793301859635}]` |
+| 解析 | `org.json`（Android 框架自带），**不引入 Gson 等第三方依赖** |
+| 上限 | 5 台（`SavedDeviceStore.MAX_DEVICES`），按 `lastUsed` 倒序，超出淘汰最旧 |
+| 去重 | 同 IP 视为同一台：覆盖名称/端口并刷新 `lastUsed` |
+| 读取时机 | `LinkController.attach()`（Activity/Service 首次拿到 Context）→ `load()` → 写入 `SenderUiState.savedDevices` |
+| 写入时机 | **收到 PC 首个 PING 即判定连接成功**（`LinkController.onPing` → `rememberTarget()`）；同一 IP 每次连接只写一次，避免每 2 秒落盘 |
+| 名称补全 | 之后收到该 IP 的 OFFER 时，用真实电脑名刷新已存条目（名称比 IP 好认） |
+| 删除 | 列表项 ✕ → `LinkController.removeSavedDevice(ip)` → 立即落盘并刷新界面。删的若是**当前连接**，本会话内不再自动写回（否则下一个 PING 2 秒内又存回来），重新点一次该设备才再次记住 |
+| 损坏兜底 | JSON 解析异常时返回空列表并打日志，界面不崩 |
+
+界面合并规则：`savedDevices` 全量在前（最近使用的一台标「上次使用」）；
+`devices`（广播发现）中与已保存 IP 重复的项过滤掉，其余追加在后。
+没有电脑名时列表项只显示一行地址，避免同一行把 IP 重复两次。
 
 ## 7. 验证方法（本机实测）
 
@@ -212,6 +239,13 @@ cd android
 .\gradlew.bat :app:assembleDebug     # BUILD SUCCESSFUL
 adb install -r -t app\build\outputs\apk\debug\app-debug.apk
 adb shell am start -n com.blueaudiosink.sender/.MainActivity
+
+# 界面观感检查：截图落在项目外，避免污染仓库
+adb shell screencap -p /sdcard/ui.png
+adb pull /sdcard/ui.png C:\Users\Public\ui-check.png
+
+# 查看已保存设备（debug 包可用 run-as 读 SharedPreferences）
+adb shell run-as com.blueaudiosink.sender cat /data/data/com.blueaudiosink.sender/shared_prefs/blueaudio_sender.xml
 ```
 
 ### 7.2 协议抓包（PC 侧临时 Python 探针，不入库）
@@ -251,10 +285,26 @@ adb shell am start -n com.blueaudiosink.sender/.MainActivity
 - 无队列、无每包分配；两个 960 B 缓冲 + 一个 976 B 发送缓冲 + 一个 2 KB 收包缓冲。
 - Android 自身（Compose + MediaProjection）约 40–60 MB，满足 ≤ 100 MB 目标（长跑未压测）。
 
+### 8.2 UI 与设备记忆（真机实测，截图见 `C:\Users\Public\ui-check-*.png`，不入库）
+
+| 检查项 | 结果 |
+| --- | --- |
+| 文案精简 | ✅ 全屏无长句；档位只有「低延迟 / 平衡 / 稳定」；底部只有「0.0% 丢包率 / 1200 已发送」 |
+| 空状态 | ✅ 无设备时只有一行「未发现设备」，手动输入折叠为「+ 手动添加」 |
+| 手动添加 | ✅ 展开输入 → 点「连接」→ 输入框自动收起；收到首个 PING 后写入记忆 |
+| 记忆持久化 | ✅ 强杀进程重启后设备仍在列表首位，带「上次使用」标记 |
+| 点已保存设备直连 | ✅ 点一下即发 HELLO，状态卡变「已连接 + IP」，无需再输 IP |
+| 删除设备 | ✅ 点 ✕ 立即消失，`saved_devices` 同步减少；连接中删除也不会被后续 PING 写回 |
+| 多设备排序 | ✅ 两台设备按最近使用倒序，只有最近一台带「上次使用」 |
+| 广播发现 | ✅ PC 侧 OFFER 探测包可被列出（灰点、无删除按钮、无「上次使用」标记），6 秒过期后自动消失 |
+| 发送/停止 | ✅ 授权后 6 秒 1200 包、丢包率 0.0%；停止后回到「已连接」，前台通知移除 |
+| 底部指标栏 | ✅ 数值完全可见（修掉重复 `navigationBarsPadding` 导致的裁切） |
+
 ## 9. 已知限制与风险
 
 1. **手机端不显示 RTT**（主 agent 已裁决 MVP 不扩展协议）：PING 由 PC 发起，手机只回 PONG，
-   拿不到 T3，无法计算 RTT。底部改为「实时延迟 · 见电脑端」，避免被误读为故障。
+   拿不到 T3，无法计算 RTT。底部只保留「丢包率 / 已发送」两个数值，不再放延迟栏位
+   （避免出现「见电脑端」这类解释性文字）。
    后续若要显示，可在协议预留的 reserved/flags 位上加 PC→手机回传。
 2. **丢包率是控制通道口径**：PC 不发音频，手机无法统计 AUDIO 丢包；界面显示的是 PING 丢失率
    （间隔 > 2.5 s 视为丢一次），真正的 AUDIO 丢包率应在 PC 端统计。

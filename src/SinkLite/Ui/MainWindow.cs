@@ -11,8 +11,8 @@ namespace SinkLite.UI
     /// 主窗口：Win32 + GDI 手绘，无托盘、无外部依赖。
     ///
     /// 设计：
-    ///   - 主页面：状态、音频源选择、输出选择、操作按钮；
-    ///   - 设置页面：开机自启、启动时自动连接、打开日志目录；
+    ///   - 主页面：只读连接状态和设备流向、连接/断开操作；
+    ///   - 设置页面：统一播放输出、连接设备切换和通用偏好；
     ///   - 输出下拉为就地展开的自绘列表；
     ///   - 按钮具备 常态 / 悬停 / 按下 三态；
     ///   - 关闭窗口即退出程序（不再常驻托盘）。
@@ -26,7 +26,6 @@ namespace SinkLite.UI
         private const int PadX = 16;
         private const int DeviceRowHeight = 34;
         private const int DropdownRowHeight = 32;
-        private const int ButtonHeight = 36;
 
         private const int AreaNone = -1;
         private const int AreaConnect = 1;
@@ -48,6 +47,12 @@ namespace SinkLite.UI
         private const int AreaBuffer80 = 320;
         private const int AreaBuffer120 = 321;
         private const int AreaBuffer160 = 322;
+        private const int AreaSettingsGeneral = 330;
+        private const int AreaSettingsDevices = 331;
+        private const int AreaPreviousPage = 332;
+        private const int AreaNextPage = 333;
+        private const int AreaDeviceBluetooth = 334;
+        private const int AreaDeviceWifi = 335;
 
         private readonly SinkController controller;
         private readonly Log log;
@@ -88,7 +93,17 @@ namespace SinkLite.UI
         private string notice;
         private DateTime noticeUntil;
 
-        private int selectedDevice;
+        private bool deviceSettings;
+        private int devicePage;
+        private sealed class DeviceChoice
+        {
+            public string Id;
+            public string Name;
+            public string Status;
+            public bool Selected;
+        }
+        private List<DeviceChoice> connectionDevices = new List<DeviceChoice>();
+        private string deviceListKey = "";
         private int hoverArea = AreaNone;
         private int pressedArea = AreaNone;
         private bool dropdownOpen;
@@ -310,7 +325,7 @@ namespace SinkLite.UI
             return string.Concat(
                 (int)s.State, "|", s.Detail ?? "", "|", s.DeviceName ?? "", "|",
                 s.Peak.ToString("0.000"), "|", s.Hint ?? "", "|",
-                selectedDevice, "|", hoverArea, "|", pressedArea, "|",
+                deviceSettings, "|", devicePage, "|", deviceListKey, "|", hoverArea, "|", pressedArea, "|",
                 dropdownOpen ? 1 : 0, "|", settingsMode ? 1 : 0, "|",
                 controller.Devices.Count, "|", cachedOutputs.Count, "|", cachedPreferredName, "|",
                 wifiMode ? 1 : 0, "|", (int)w.State, "|", w.Enabled ? 1 : 0, "|",
@@ -329,7 +344,34 @@ namespace SinkLite.UI
         private void OnTimer()
         {
             RefreshOutputCache(false);
+            RefreshConnectionDevices();
             RequestRepaint(false);
+        }
+
+        private void RefreshConnectionDevices()
+        {
+            var choices = new List<DeviceChoice>();
+            if (wifiMode)
+            {
+                foreach (WifiPeer peer in wifi.ListPeers())
+                    choices.Add(new DeviceChoice { Id = peer.Id, Name = peer.Name, Selected = peer.Selected || peer.Active,
+                        Status = peer.Selected ? "已选择" : peer.Active ? "当前设备" : peer.Recent ? "近期活动" : "未确认在线" });
+            }
+            else
+            {
+                SinkSnapshot snapshot = controller.Current;
+                foreach (SinkDevice device in controller.Devices)
+                {
+                    bool active = device.Id == snapshot.DeviceId;
+                    bool connected = active && (snapshot.State == SinkState.LinkReady || snapshot.State == SinkState.Flowing);
+                    bool preferred = device.Id == pageSettings.DeviceId;
+                    choices.Add(new DeviceChoice { Id = device.Id, Name = device.Name, Selected = preferred,
+                        Status = active && snapshot.State == SinkState.Busy ? "连接中" : connected ? "已连接" : active && snapshot.State == SinkState.Armed ? "等待音频" : preferred ? "首选设备" : "已配对" });
+                }
+            }
+            connectionDevices = choices;
+            devicePage = Math.Clamp(devicePage, 0, Math.Max(0, (choices.Count - 1) / MaxDeviceRows));
+            deviceListKey = string.Join("|", choices.ConvertAll(d => d.Id + d.Name + d.Status + d.Selected));
         }
 
         private void RefreshOutputCache(bool force)
@@ -367,12 +409,9 @@ namespace SinkLite.UI
             public int Height;
             public int Left;
             public int ContentWidth;
-            public int SourceLabelTop;
             public int DeviceListTop;
             public int VisibleRows;
             public int OutputLabelTop;
-            public int OutputBoxTop;
-            public int OutputBoxBottom;
             public int ButtonTop;
             public int ButtonWidth;
             public int ButtonGap;
@@ -405,23 +444,16 @@ namespace SinkLite.UI
             m.SettingsRect = Rect(right - S(56), S(10), right, S(42));
             m.ModeWifiRect = Rect(m.SettingsRect.Left - S(70), S(10), m.SettingsRect.Left - S(10), S(42));
             m.ModeBluetoothRect = Rect(m.ModeWifiRect.Left - S(62), S(10), m.ModeWifiRect.Left - S(6), S(42));
-            m.SourceLabelTop = S(156);
-            m.DeviceListTop = S(184);
-            int fit = Math.Max(1, (height - m.DeviceListTop - S(130)) / S(DeviceRowHeight));
-            m.VisibleRows = Math.Min(Math.Min(MaxDeviceRows, Math.Max(1, controller.Devices.Count)), fit);
-            m.OutputLabelTop = m.DeviceListTop + m.VisibleRows * S(DeviceRowHeight) + S(12);
-            m.OutputBoxTop = m.OutputLabelTop + S(24);
-            m.OutputBoxBottom = m.OutputBoxTop + S(34);
-            m.OutputRect = Rect(m.Left, m.OutputBoxTop, right, m.OutputBoxBottom);
-            m.ButtonTop = m.OutputBoxBottom + S(12);
+            m.DeviceListTop = S(170);
+            m.VisibleRows = Math.Min(MaxDeviceRows, Math.Max(0, connectionDevices.Count - devicePage * MaxDeviceRows));
+            m.ButtonTop = S(246);
             m.ButtonGap = S(8);
-            m.ButtonWidth = (m.ContentWidth - m.ButtonGap * 2) / 3;
+            m.ButtonWidth = (m.ContentWidth - m.ButtonGap) / 2;
             int x = m.Left;
             m.ConnectRect = Rect(x, m.ButtonTop, x + m.ButtonWidth, m.ButtonTop + S(34));
             x = m.ConnectRect.Right + m.ButtonGap;
             m.DisconnectRect = Rect(x, m.ButtonTop, x + m.ButtonWidth, m.ButtonTop + S(34));
-            x = m.DisconnectRect.Right + m.ButtonGap;
-            m.RefreshRect = Rect(x, m.ButtonTop, right, m.ButtonTop + S(34));
+            m.RefreshRect = Rect(m.Left, S(350), m.Left + S(118), S(382));
             m.BackRect = Rect(m.Left, S(60), m.Left + S(62), S(90));
             m.LogsButtonRect = Rect(m.Left, S(412), m.Left + S(140), S(444));
             m.Buffer80Rect = Rect(m.Left + S(12), S(336), m.Left + S(98), S(368));
@@ -429,12 +461,23 @@ namespace SinkLite.UI
             m.Buffer160Rect = Rect(m.Left + S(200), S(336), m.Left + S(286), S(368));
             m.DetailsRect = Rect(right - S(84), S(328), right, S(358));
             m.CopyAddressRect = Rect(m.Left + S(174), S(328), m.Left + S(222), S(358));
-            if (settingsMode)
-            {
-                m.OutputLabelTop = S(112);
-                m.OutputRect = Rect(m.Left + S(12), S(134), right - S(12), S(168));
-            }
+            m.OutputLabelTop = S(112);
+            m.OutputRect = Rect(m.Left + S(12), S(134), right - S(12), S(168));
             return m;
+        }
+
+        private Win32.RECT SettingsControlRect(Metrics m, int area)
+        {
+            int right = m.Left + m.ContentWidth;
+            switch (area)
+            {
+                case AreaSettingsGeneral: return Rect(m.Left + S(76), S(60), m.Left + S(148), S(90));
+                case AreaSettingsDevices: return Rect(m.Left + S(156), S(60), m.Left + S(260), S(90));
+                case AreaDeviceBluetooth: return Rect(m.Left, S(104), m.Left + S(88), S(136));
+                case AreaDeviceWifi: return Rect(m.Left + S(96), S(104), m.Left + S(184), S(136));
+                case AreaPreviousPage: return Rect(right - S(150), S(350), right - S(80), S(382));
+                default: return Rect(right - S(70), S(350), right, S(382));
+            }
         }
 
         private void ComputeDropdown(Metrics m)
@@ -475,6 +518,20 @@ namespace SinkLite.UI
             if (settingsMode)
             {
                 if (Contains(m.BackRect, x, y)) return AreaBack;
+                foreach (int tab in new[] { AreaSettingsGeneral, AreaSettingsDevices })
+                    if (Contains(SettingsControlRect(m, tab), x, y)) return tab;
+                if (deviceSettings)
+                {
+                    foreach (int button in new[] { AreaDeviceBluetooth, AreaDeviceWifi, AreaPreviousPage, AreaNextPage })
+                        if (Contains(SettingsControlRect(m, button), x, y)) return IsEnabled(button) ? button : AreaNone;
+                    if (Contains(m.RefreshRect, x, y)) return AreaRefresh;
+                    if (x >= m.Left && x < m.Left + m.ContentWidth && y >= m.DeviceListTop && y < m.DeviceListTop + m.VisibleRows * S(DeviceRowHeight))
+                    {
+                        int row = (y - m.DeviceListTop) / S(DeviceRowHeight);
+                        return IsEnabled(AreaDeviceBase + row) ? AreaDeviceBase + row : AreaNone;
+                    }
+                    return AreaNone;
+                }
                 if (Contains(m.OutputRect, x, y)) return IsEnabled(AreaOutput) ? AreaOutput : AreaNone;
                 if (Contains(m.LogsButtonRect, x, y)) return AreaOpenLogs;
                 if (Contains(Rect(m.Left + S(8), S(174), m.Left + m.ContentWidth - S(8), S(222)), x, y)) return AreaAutoStart;
@@ -491,22 +548,20 @@ namespace SinkLite.UI
                 if (Contains(m.CopyAddressRect, x, y)) return AreaCopyAddress;
                 return AreaNone;
             }
-            if (Contains(m.OutputRect, x, y)) return IsEnabled(AreaOutput) ? AreaOutput : AreaNone;
             if (Contains(m.ConnectRect, x, y)) return IsEnabled(AreaConnect) ? AreaConnect : AreaNone;
             if (Contains(m.DisconnectRect, x, y)) return IsEnabled(AreaDisconnect) ? AreaDisconnect : AreaNone;
-            if (Contains(m.RefreshRect, x, y)) return AreaRefresh;
-            if (x >= m.Left && x < m.Left + m.ContentWidth && y >= m.DeviceListTop && y < m.DeviceListTop + m.VisibleRows * S(DeviceRowHeight))
-            {
-                int i = (y - m.DeviceListTop) / S(DeviceRowHeight);
-                if (i < controller.Devices.Count) return AreaDeviceBase + i;
-            }
             return AreaNone;
         }
+
 
         private bool IsEnabled(int area)
         {
             if (modeSwitching) return false;
-            if (area == AreaOutput) return cachedOutputs.Count > 0;
+            if (area == AreaOutput) return settingsMode && !deviceSettings && cachedOutputs.Count > 0;
+            if (area == AreaPreviousPage) return devicePage > 0;
+            if (area == AreaNextPage) return (devicePage + 1) * MaxDeviceRows < connectionDevices.Count;
+            if (area >= AreaDeviceBase && area < AreaDropdownBase)
+                return wifiMode || controller.Current.State != SinkState.Busy;
             if (area == AreaConnect) return controller.Devices.Count > 0 && controller.Current.State != SinkState.Busy;
             if (area == AreaDisconnect) return controller.Current.State != SinkState.Idle && controller.Current.State != SinkState.Faulted;
             return true;
@@ -596,6 +651,23 @@ namespace SinkLite.UI
 
             switch (area)
             {
+                case AreaSettingsGeneral:
+                case AreaSettingsDevices:
+                    deviceSettings = area == AreaSettingsDevices;
+                    dropdownOpen = false;
+                    RefreshConnectionDevices();
+                    return;
+                case AreaDeviceBluetooth:
+                case AreaDeviceWifi:
+                    SetMode(area == AreaDeviceWifi);
+                    devicePage = 0;
+                    RefreshConnectionDevices();
+                    return;
+                case AreaPreviousPage:
+                case AreaNextPage:
+                    devicePage += area == AreaNextPage ? 1 : -1;
+                    RefreshConnectionDevices();
+                    return;
                 case AreaModeBluetooth:
                     settingsMode = false;
                     SetMode(false);
@@ -616,6 +688,7 @@ namespace SinkLite.UI
                     settingsMode = true;
                     pageSettings = Settings.Load();
                     autoStartEnabled = AutoStart.IsEnabled();
+                    RefreshConnectionDevices();
                     focusArea = keyboardFocus ? AreaBack : AreaSettings;
                     dropdownOpen = false;
                     log.Info("Ui.SettingsOpened");
@@ -677,10 +750,7 @@ namespace SinkLite.UI
 
                 case AreaConnect:
                 {
-                    IReadOnlyList<SinkDevice> devices = controller.Devices;
-                    string deviceId = selectedDevice >= 0 && selectedDevice < devices.Count
-                        ? devices[selectedDevice].Id
-                        : null;
+                    string deviceId = string.IsNullOrEmpty(pageSettings.DeviceId) ? null : pageSettings.DeviceId;
                     controller.RequestConnect(deviceId);
                     log.Info("Ui.ConnectClicked", ("device", deviceId ?? "(默认)"));
                     return;
@@ -692,21 +762,33 @@ namespace SinkLite.UI
                     return;
 
                 case AreaRefresh:
-                    controller.RequestRefreshDevices();
-                    ShowNotice("正在刷新已配对设备");
+                    if (wifiMode) ShowNotice(wifi.RefreshDiscovery() ? "已广播电脑信息，请在手机端选择这台电脑" : "广播失败，请检查 Wi-Fi 连接");
+                    else { controller.RequestRefreshDevices(); ShowNotice("正在刷新已配对设备"); }
+                    RefreshConnectionDevices();
                     lastOutputRefresh = DateTime.MinValue;
                     return;
             }
 
             if (area >= AreaDeviceBase && area < AreaDropdownBase)
             {
-                int index = area - AreaDeviceBase;
-                IReadOnlyList<SinkDevice> devices = controller.Devices;
-                if (index >= 0 && index < devices.Count)
+                int index = devicePage * MaxDeviceRows + area - AreaDeviceBase;
+                if (index >= 0 && index < connectionDevices.Count)
                 {
-                    selectedDevice = index;
-                    controller.RequestConnect(devices[index].Id);
-                    log.Info("Ui.DevicePicked", ("device", devices[index].Name));
+                    DeviceChoice pick = connectionDevices[index];
+                    if (wifiMode)
+                    {
+                        ShowNotice(wifi.SelectPeer(pick.Id) ? "已选择手机，请在手机端开始发送" : "设备不可用，请刷新后重试");
+                    }
+                    else
+                    {
+                        Settings preferences = Settings.Load();
+                        preferences.DeviceId = pick.Id;
+                        preferences.Save(); pageSettings = preferences;
+                        controller.RequestConnect(pick.Id);
+                        ShowNotice("正在连接 " + pick.Name);
+                    }
+                    RefreshConnectionDevices();
+                    log.Info("Ui.DevicePicked", ("mode", wifiMode ? "wifi" : "bluetooth"), ("device", pick.Name));
                 }
             }
         }
@@ -751,17 +833,14 @@ namespace SinkLite.UI
                     Settings settings = Settings.Load();
                     if (settings.AutoConnect)
                     {
-                        IReadOnlyList<SinkDevice> devices = controller.Devices;
-                        string deviceId = selectedDevice >= 0 && selectedDevice < devices.Count
-                            ? devices[selectedDevice].Id
-                            : null;
+                        string deviceId = string.IsNullOrEmpty(settings.DeviceId) ? null : settings.DeviceId;
                         controller.RequestConnect(deviceId);
                     }
                 }
 
                 dropdownOpen = false;
             }
-            finally { modeSwitching = false; RequestRepaint(true); }
+            finally { modeSwitching = false; RefreshConnectionDevices(); RequestRepaint(true); }
         }
 
         private static void SaveMode(string mode)
@@ -826,7 +905,16 @@ namespace SinkLite.UI
                     for (int i = 0; i < dropdownRows; i++) areas.Add(AreaDropdownBase + i);
                 }
                 else if (settingsMode)
-                    areas.AddRange(new[] { AreaBack, AreaOutput, AreaAutoStart, AreaAutoConnect, AreaBuffer80, AreaBuffer120, AreaBuffer160, AreaOpenLogs });
+                {
+                    areas.AddRange(new[] { AreaBack, AreaSettingsGeneral, AreaSettingsDevices });
+                    if (deviceSettings)
+                    {
+                        areas.AddRange(new[] { AreaDeviceBluetooth, AreaDeviceWifi });
+                        for (int i = 0; i < ComputeMetrics().VisibleRows; i++) areas.Add(AreaDeviceBase + i);
+                        areas.AddRange(new[] { AreaRefresh, AreaPreviousPage, AreaNextPage });
+                    }
+                    else areas.AddRange(new[] { AreaOutput, AreaAutoStart, AreaAutoConnect, AreaBuffer80, AreaBuffer120, AreaBuffer160, AreaOpenLogs });
+                }
                 else if (wifiMode)
                 {
                     if (wifi.Current.State == SinkState.Faulted) areas.Add(AreaRetryWifi);
@@ -834,8 +922,7 @@ namespace SinkLite.UI
                 }
                 else
                 {
-                    for (int i = 0; i < Math.Min(controller.Devices.Count, ComputeMetrics().VisibleRows); i++) areas.Add(AreaDeviceBase + i);
-                    areas.AddRange(new[] { AreaOutput, AreaConnect, AreaDisconnect, AreaRefresh });
+                    areas.AddRange(new[] { AreaConnect, AreaDisconnect });
                 }
                 areas.RemoveAll(a => !IsEnabled(a));
                 int direction = Win32.GetKeyState(0x10) < 0 ? -1 : 1;
@@ -974,13 +1061,7 @@ namespace SinkLite.UI
                 {
                     SinkSnapshot snapshot = controller.Current;
                     DrawHeader(hdcMem, m, snapshot);
-                    DrawDeviceSection(hdcMem, m, snapshot);
-                    DrawOutputSection(hdcMem, m);
-                    DrawButtons(hdcMem, m);
-                    if (dropdownOpen)
-                    {
-                        DrawDropdown(hdcMem);
-                    }
+                    DrawBluetoothPage(hdcMem, m, snapshot);
                 }
 
                 DrawModeTabs(hdcMem, m);
@@ -1011,8 +1092,9 @@ namespace SinkLite.UI
         private void DrawHeader(IntPtr hdc, Metrics m, SinkSnapshot snapshot)
         {
             string title = DescribeState(snapshot.State);
-            string detail = string.IsNullOrEmpty(snapshot.DeviceName) ? "选择已配对的手机，开始接收音频。" : snapshot.DeviceName;
-            if (snapshot.State == SinkState.Armed) detail = "连接已就绪，请在手机上播放音频。";
+            string detail = string.IsNullOrEmpty(snapshot.DeviceName) ? "前往设置选择手机，再点击连接。" : snapshot.DeviceName;
+            if (snapshot.State == SinkState.Idle) detail = "点击连接；更换手机请前往设置。";
+            else if (snapshot.State == SinkState.Armed) detail = "连接已就绪，请在手机上播放音频。";
             else if (snapshot.State == SinkState.LinkReady) detail = "已建立音频链路，正在等待声音。";
             else if (snapshot.State == SinkState.Faulted) detail = snapshot.Detail ?? "请重试连接。";
             ConnectionPresentation view = new ConnectionPresentation
@@ -1143,44 +1225,44 @@ namespace SinkLite.UI
             return value.ToString("0.0") + " %";
         }
 
-        private void DrawDeviceSection(IntPtr hdc, Metrics m, SinkSnapshot snapshot)
+        private void DrawBluetoothPage(IntPtr hdc, Metrics m, SinkSnapshot snapshot)
         {
-            DrawCaption(hdc, "发送手机", m.Left, m.SourceLabelTop);
+            int right = m.Left + m.ContentWidth, half = m.ContentWidth / 2;
+            Win32.RECT card = Rect(m.Left, S(154), right, S(230));
+            RoundFill(hdc, card, S(8), brushCard); RoundBorder(hdc, card, S(8), brushBorder);
+            Text(hdc, "发送手机", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(12), S(162), m.Left + half, S(180)));
+            Text(hdc, snapshot.DeviceName ?? "尚未选择", fontHeading, Win32.Rgb(23, 40, 63), Rect(m.Left + S(12), S(184), m.Left + half - S(8), S(208)));
+            Text(hdc, "播放到", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + half + S(8), S(162), right - S(12), S(180)));
+            Text(hdc, cachedPreferredName, fontBody, Win32.Rgb(23, 40, 63), Rect(m.Left + half + S(8), S(184), right - S(12), S(208)));
+            DrawButton(hdc, m.ConnectRect, snapshot.State == SinkState.Flowing ? "重新连接" : "连接", AreaConnect, true);
+            DrawButton(hdc, m.DisconnectRect, "断开", AreaDisconnect, false);
+            Text(hdc, "更换手机或播放设备，请前往设置。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left, S(292), right, S(316)));
+        }
 
-            IReadOnlyList<SinkDevice> devices = controller.Devices;
-            int drawn = 0;
-            for (int i = 0; i < devices.Count && drawn < m.VisibleRows; i++, drawn++)
+        private void DrawDeviceSettings(IntPtr hdc, Metrics m)
+        {
+            DrawModeTab(hdc, SettingsControlRect(m, AreaDeviceBluetooth), "蓝牙手机", !wifiMode, AreaDeviceBluetooth);
+            DrawModeTab(hdc, SettingsControlRect(m, AreaDeviceWifi), "Wi-Fi 手机", wifiMode, AreaDeviceWifi);
+            Text(hdc, wifiMode ? "选择接收音频的手机" : "选择后立即连接并记住该手机", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left, S(142), m.Left + m.ContentWidth, S(164)));
+            for (int rowIndex = 0; rowIndex < m.VisibleRows; rowIndex++)
             {
-                int top = m.DeviceListTop + drawn * S(DeviceRowHeight);
+                DeviceChoice choice = connectionDevices[devicePage * MaxDeviceRows + rowIndex];
+                int top = m.DeviceListTop + rowIndex * S(DeviceRowHeight);
                 Win32.RECT row = Rect(m.Left, top, m.Left + m.ContentWidth, top + S(DeviceRowHeight) - S(2));
-
-                bool isActive = devices[i].Id == snapshot.DeviceId;
-                bool isSelected = i == selectedDevice;
-                bool connected = isActive && (snapshot.State == SinkState.Armed || snapshot.State == SinkState.LinkReady || snapshot.State == SinkState.Flowing);
-                int area = AreaDeviceBase + i;
-
-                if (isSelected || hoverArea == area)
-                    RoundFill(hdc, row, S(6), isSelected ? brushRowSelected : brushRowHover);
-                Win32.SelectObject(hdc, fontBody);
-                Win32.SetTextColor(hdc, Win32.Rgb(23, 40, 63));
-                Win32.RECT textRect = Rect(row.Left + S(10), row.Top, row.Right - S(84), row.Bottom);
-                Win32.DrawText(hdc, devices[i].Name, -1, ref textRect,
-                    Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
-                if (connected || isSelected)
-                    Text(hdc, connected ? "已连接" : "已选择", fontSmall,
-                        connected ? Win32.Rgb(20, 120, 75) : Win32.Rgb(0, 100, 170),
-                        Rect(row.Right - S(72), row.Top, row.Right - S(8), row.Bottom), true);
+                if (choice.Selected || hoverArea == AreaDeviceBase + rowIndex)
+                    RoundFill(hdc, row, S(6), choice.Selected ? brushRowSelected : brushRowHover);
+                Text(hdc, choice.Name, fontBody, Win32.Rgb(23, 40, 63), Rect(row.Left + S(10), row.Top, row.Right - S(100), wifiMode ? row.Top + S(18) : row.Bottom));
+                if (wifiMode) Text(hdc, choice.Id, fontSmall, Win32.Rgb(88, 102, 122), Rect(row.Left + S(10), row.Top + S(18), row.Right - S(100), row.Bottom));
+                Text(hdc, choice.Status, fontSmall, choice.Selected ? Win32.Rgb(0, 100, 170) : Win32.Rgb(88, 102, 122), Rect(row.Right - S(96), row.Top, row.Right - S(8), row.Bottom), true);
             }
-
-            if (devices.Count == 0)
-            {
-                Win32.SelectObject(hdc, fontSmall);
-                Win32.SetTextColor(hdc, Win32.Rgb(150, 150, 150));
-                Win32.RECT emptyRect = Rect(m.Left + S(2), m.DeviceListTop,
-                    m.Left + m.ContentWidth, m.DeviceListTop + S(DeviceRowHeight));
-                Win32.DrawText(hdc, "暂无已配对的手机，请先在 Windows 设置中配对", -1, ref emptyRect,
-                    Win32.DT_LEFT | Win32.DT_VCENTER | Win32.DT_SINGLELINE | Win32.DT_END_ELLIPSIS);
-            }
+            if (connectionDevices.Count == 0)
+                Text(hdc, wifiMode ? "尚未发现手机，请在发送端选择这台电脑。" : "暂无手机，请先在 Windows 蓝牙设置中配对。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left, m.DeviceListTop, m.Left + m.ContentWidth, m.DeviceListTop + S(34)));
+            DrawButton(hdc, m.RefreshRect, wifiMode ? "广播发现" : "刷新设备", AreaRefresh, false);
+            Text(hdc, (devicePage + 1) + " / " + Math.Max(1, (connectionDevices.Count + MaxDeviceRows - 1) / MaxDeviceRows), fontSmall, Win32.Rgb(88, 102, 122), Rect(m.RefreshRect.Right + S(8), S(350), SettingsControlRect(m, AreaPreviousPage).Left - S(8), S(382)), true);
+            DrawButton(hdc, SettingsControlRect(m, AreaPreviousPage), "上一页", AreaPreviousPage, false);
+            DrawButton(hdc, SettingsControlRect(m, AreaNextPage), "下一页", AreaNextPage, false);
+            Text(hdc, wifiMode ? "选择后仅接收该手机，其他手机不会抢占播放。" : "可切换多台已配对手机，同一时间连接一台。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left, S(394), m.Left + m.ContentWidth, S(414)));
+            Text(hdc, wifiMode ? "仍需在手机端授权并开始发送；离开 Wi-Fi 后重置选择。" : "播放设备在「常规」中统一调整。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left, S(416), m.Left + m.ContentWidth, S(436)));
         }
 
         private void DrawOutputSection(IntPtr hdc, Metrics m)
@@ -1240,13 +1322,6 @@ namespace SinkLite.UI
             }
         }
 
-        private void DrawButtons(IntPtr hdc, Metrics m)
-        {
-            DrawButton(hdc, m.ConnectRect, controller.Current.State == SinkState.Flowing ? "重新连接" : "连接", AreaConnect, true);
-            DrawButton(hdc, m.DisconnectRect, "断开", AreaDisconnect, false);
-            DrawButton(hdc, m.RefreshRect, "刷新", AreaRefresh, false);
-        }
-
         /// <summary>
         /// 设置页。开关类功能用经典划钮（左=关，右=开，开启时槽变主色），
         /// 不再做成“可点进下一级”的列表项。
@@ -1254,7 +1329,9 @@ namespace SinkLite.UI
         private void DrawSettings(IntPtr hdc, Metrics m)
         {
             DrawButton(hdc, m.BackRect, "返回", AreaBack, false);
-            Text(hdc, "设置", fontTitle, Win32.Rgb(23, 40, 63), Rect(m.Left + S(76), S(58), m.Left + m.ContentWidth, S(94)));
+            DrawModeTab(hdc, SettingsControlRect(m, AreaSettingsGeneral), "常规", !deviceSettings, AreaSettingsGeneral);
+            DrawModeTab(hdc, SettingsControlRect(m, AreaSettingsDevices), "连接设备", deviceSettings, AreaSettingsDevices);
+            if (deviceSettings) { DrawDeviceSettings(hdc, m); return; }
             Win32.RECT general = Rect(m.Left, S(104), m.Left + m.ContentWidth, S(232));
             RoundFill(hdc, general, S(8), brushCard); RoundBorder(hdc, general, S(8), brushBorder);
             Metrics outputLayout = m; outputLayout.Left += S(12); outputLayout.ContentWidth -= S(24);
@@ -1451,6 +1528,12 @@ namespace SinkLite.UI
             Win32.RECT r;
             switch (focusArea)
             {
+                case AreaSettingsGeneral:
+                case AreaSettingsDevices:
+                case AreaPreviousPage:
+                case AreaNextPage:
+                case AreaDeviceBluetooth:
+                case AreaDeviceWifi: r = SettingsControlRect(m, focusArea); break;
                 case AreaModeBluetooth: r = m.ModeBluetoothRect; break;
                 case AreaModeWifi: r = m.ModeWifiRect; break;
                 case AreaSettings: r = m.SettingsRect; break;
@@ -1515,7 +1598,7 @@ namespace SinkLite.UI
         {
             switch (state)
             {
-                case SinkState.Idle: return "选择一台手机";
+                case SinkState.Idle: return "蓝牙尚未连接";
                 case SinkState.Busy: return "正在连接";
                 case SinkState.Armed: return "连接就绪，等待音频";
                 case SinkState.LinkReady: return "链路已建立";

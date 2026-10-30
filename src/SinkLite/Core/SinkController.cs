@@ -343,6 +343,10 @@ namespace SinkLite.Core
                 return;
             }
 
+            if (connection != null && armedDeviceId != target.Id)
+            {
+                await ReleaseAsync("switch device");
+            }
             wantConnected = true;
             retryCount = 0;
             retryAt = null;

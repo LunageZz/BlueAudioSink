@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -185,6 +186,21 @@ namespace SinkLite.Core
         public void RefreshOutput()
         {
             lock (sync) { if (receiver != null) receiver.RefreshOutput(); }
+        }
+
+        public IReadOnlyList<WifiPeer> ListPeers()
+        {
+            lock (sync) { return receiver == null ? Array.Empty<WifiPeer>() : receiver.ListPeers(); }
+        }
+
+        public bool SelectPeer(string id)
+        {
+            lock (sync) { return receiver != null && receiver.SelectPeer(id); }
+        }
+
+        public bool RefreshDiscovery()
+        {
+            lock (sync) { return receiver != null && receiver.SendOffer(); }
         }
 
         public void Stop()

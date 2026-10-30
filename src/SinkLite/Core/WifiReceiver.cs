@@ -9,6 +9,15 @@ using SinkLite.Platform;
 
 namespace SinkLite.Core
 {
+    internal sealed class WifiPeer
+    {
+        public string Id { get; set; }
+        public string Name { get; set; }
+        public bool Recent { get; set; }
+        public bool Selected { get; set; }
+        public bool Active { get; set; }
+    }
+
     /// <summary>
     /// Wi-Fi 模式的 UDP 接收、抖动缓冲与播放调度。
     ///
@@ -83,6 +92,67 @@ namespace SinkLite.Core
         private IPEndPoint remote;
         private IPEndPoint sessionEndpoint;
         private string remoteName;
+        private sealed class KnownPeer
+        {
+            public IPEndPoint Endpoint;
+            public string Name;
+            public long Seen;
+        }
+        private readonly Dictionary<string, KnownPeer> peers = new Dictionary<string, KnownPeer>();
+        private IPEndPoint selectedPeer;
+
+        private void RememberPeerLocked(IPEndPoint endpoint, long now, string name = null)
+        {
+            if (endpoint == null) return;
+            string id = endpoint.ToString();
+            if (!peers.TryGetValue(id, out KnownPeer peer))
+            {
+                if (peers.Count >= 32) return;
+                peer = new KnownPeer { Endpoint = endpoint, Name = endpoint.Address.ToString() };
+                peers.Add(id, peer);
+            }
+            peer.Seen = now;
+            if (!string.IsNullOrWhiteSpace(name)) peer.Name = name;
+        }
+
+        public IReadOnlyList<WifiPeer> ListPeers()
+        {
+            lock (sync)
+            {
+                var result = new List<WifiPeer>();
+                long now = clock.ElapsedTicks;
+                foreach (var pair in peers)
+                    result.Add(new WifiPeer { Id = pair.Key, Name = pair.Value.Name,
+                        Recent = now - pair.Value.Seen <= TicksFromMs(10000),
+                        Selected = SameEndpoint(selectedPeer, pair.Value.Endpoint),
+                        Active = SameEndpoint(sessionEndpoint, pair.Value.Endpoint) });
+                return result;
+            }
+        }
+
+        public bool SelectPeer(string id)
+        {
+            lock (sync)
+            {
+                if (!peers.TryGetValue(id, out KnownPeer peer)) return false;
+                selectedPeer = peer.Endpoint;
+                if (SameEndpoint(sessionEndpoint, selectedPeer)) return true;
+                GoArmedLocked("已选择手机，等待发送音频");
+                received = missing = duplicates = late = resets = underruns = discontinuities = dropped = stale = 0;
+                gapPending = malformedPending = underrunPending = rebufferPending = 0;
+                remote = peer.Endpoint;
+                remoteName = peer.Name;
+                lastAnyTicks = 0;
+                log.Info("Wifi.DeviceSelected", ("endpoint", id), ("name", peer.Name));
+                return true;
+            }
+        }
+
+        private bool AcceptSourceLocked(IPEndPoint from)
+        {
+            return (selectedPeer == null || SameEndpoint(selectedPeer, from)) &&
+                (sessionEndpoint == null || SameEndpoint(sessionEndpoint, from));
+        }
 
         private bool expectedValid;
         private uint expectedSeq;
@@ -426,6 +496,7 @@ namespace SinkLite.Core
                 default:
                     lock (sync)
                     {
+                        if (!AcceptSourceLocked(from)) return;
                         unknown++;
                         lastAnyTicks = now;
                     }
@@ -443,6 +514,8 @@ namespace SinkLite.Core
 
             lock (sync)
             {
+                RememberPeerLocked(from, now);
+                if (!AcceptSourceLocked(from)) { foreign++; return; }
                 lastAnyTicks = now;
 
                 if (state == SinkState.Faulted)
@@ -461,6 +534,7 @@ namespace SinkLite.Core
                     // START 丢失：Armed 下首个 AUDIO 自动建会话，基线取该包 seq。
                     sessionEndpoint = from;
                     remote = from;
+                    remoteName = peers.TryGetValue(from.ToString(), out KnownPeer peer) ? peer.Name : from.Address.ToString();
                     BeginSessionLocked(now, false, 0);
                     log.Info("Wifi.Start", ("endpoint", from.ToString()), ("packetTsUs", header.TimestampUs), ("auto", true));
                 }
@@ -592,9 +666,12 @@ namespace SinkLite.Core
         {
             lock (sync)
             {
+                RememberPeerLocked(from, now);
+                if (!AcceptSourceLocked(from)) { foreign++; return; }
                 lastAnyTicks = now;
                 sessionEndpoint = from;
                 remote = from;
+                remoteName = peers.TryGetValue(from.ToString(), out KnownPeer peer) ? peer.Name : from.Address.ToString();
                 draining = false;
                 rebuffering = false;
                 BeginSessionLocked(now, true, header.TimestampUs);
@@ -615,6 +692,7 @@ namespace SinkLite.Core
             bool finish = false;
             lock (sync)
             {
+                if (!AcceptSourceLocked(from)) { foreign++; return; }
                 lastAnyTicks = now;
                 if (state == SinkState.Faulted || state == SinkState.Armed)
                 {
@@ -658,6 +736,7 @@ namespace SinkLite.Core
         {
             lock (sync)
             {
+                if (!AcceptSourceLocked(from)) return;
                 lastAnyTicks = now;
                 if (state == SinkState.Armed && remote == null)
                 {
@@ -680,6 +759,7 @@ namespace SinkLite.Core
             uint echoedUs = WifiTransport.ReadUInt32(data, WifiTransport.HeaderSize);
             lock (sync)
             {
+                if (!AcceptSourceLocked(from)) return;
                 if (!IsCurrentEndpointLocked(from))
                 {
                     return;
@@ -723,6 +803,8 @@ namespace SinkLite.Core
             bool changed = false;
             lock (sync)
             {
+                RememberPeerLocked(from, now, name);
+                if (!AcceptSourceLocked(from)) return;
                 lastAnyTicks = now;
                 if (state != SinkState.Armed && sessionEndpoint != null && from != null &&
                     !SameEndpoint(sessionEndpoint, from))

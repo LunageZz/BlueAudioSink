@@ -155,6 +155,73 @@ class Program
             Assert(view.Tone == ConnectionTone.Error && view.Description == "端口绑定失败", "Fault lost");
             Assert(ConnectionPresentation.Wifi(new WifiSnapshot { Enabled = true, State = SinkState.Busy }).Title == "正在准备连接", "Preparing label lost");
         });
+        void From(WifiReceiver r, IPEndPoint source, byte type, long now, string name = null, uint seq = 0)
+        {
+            byte[] payload = type == WifiTransport.TypeHello ? System.Text.Encoding.UTF8.GetBytes(name) : type == WifiTransport.TypeAudio ? Signal(5) : null;
+            byte[] data = WifiTransport.BuildPacket(type, 0, seq, (uint)(now / 1000), payload);
+            Call(r, "HandlePacket", data, data.Length, source, now, false);
+        }
+        Test("Wi-Fi discovers a second phone without changing active name or stream", () => {
+            using var r = new WifiReceiver(log, 0, 0, 80, 200, "test");
+            var a = new IPEndPoint(IPAddress.Loopback, 31001); var b = new IPEndPoint(IPAddress.Loopback, 31002);
+            From(r, a, WifiTransport.TypeHello, Ticks(1), "Phone A");
+            From(r, a, WifiTransport.TypeStart, Ticks(2));
+            From(r, b, WifiTransport.TypeHello, Ticks(3), "Phone B");
+            From(r, b, WifiTransport.TypeStart, Ticks(4));
+            Assert(r.ListPeers().Count == 2 && r.GetSnapshot().DeviceName == "Phone A" && r.GetSnapshot().Remote == a.ToString(), "Foreign phone hijacked stream/name");
+            Assert(r.ListPeers().Single(p => p.Active).Id == a.ToString() && r.ListPeers().All(p => !p.Selected), "Automatic source confused with explicit selection");
+        });
+        Test("Selecting another Wi-Fi phone releases PCM and rejects every old source message", () => {
+            using var r = new WifiReceiver(log, 0, 0, 80, 200, "test");
+            var a = new IPEndPoint(IPAddress.Loopback, 31001); var b = new IPEndPoint(IPAddress.Loopback, 31002);
+            From(r, a, WifiTransport.TypeHello, Ticks(1), "Phone A");
+            From(r, a, WifiTransport.TypeAudio, Ticks(2));
+            From(r, b, WifiTransport.TypeHello, Ticks(3), "Phone B");
+            Assert(!r.SelectPeer("missing") && r.GetSnapshot().Remote == a.ToString(), "Invalid choice disturbed stream");
+            Assert(r.SelectPeer(b.ToString()), "Selection failed");
+            var selected = r.GetSnapshot();
+            Assert(selected.Remote == b.ToString() && selected.Received == 0 && selected.BufferMs == 0 && selected.State == SinkState.Armed && double.IsNaN(selected.LastAudioAgeMs) && double.IsNaN(selected.ControlAgeMs), "Stale audio/control retained on switch");
+            From(r, a, WifiTransport.TypeHello, Ticks(4), "Wrong name");
+            From(r, a, WifiTransport.TypeStart, Ticks(5));
+            From(r, a, WifiTransport.TypeAudio, Ticks(6));
+            From(r, a, WifiTransport.TypeStop, Ticks(7));
+            Assert(r.GetSnapshot().State == SinkState.Armed && r.GetSnapshot().DeviceName == "Phone B" && (long)Get(r, "lastAnyTicks") == 0, "Old source altered state");
+            From(r, b, WifiTransport.TypeAudio, Ticks(8));
+            Assert(r.GetSnapshot().Received == 1 && r.GetSnapshot().Remote == b.ToString(), "Selected source did not resume without START");
+            Call(r, "GoArmedLocked", "timeout");
+            From(r, a, WifiTransport.TypeStart, Ticks(9));
+            Assert(r.GetSnapshot().State == SinkState.Armed && r.ListPeers().Single(p => p.Selected).Id == b.ToString(), "Timeout unlocked selected source");
+        });
+        Test("Wi-Fi discovery is bounded and retained candidates are not claimed online", () => {
+            using var r = new WifiReceiver(log, 0, 0, 80, 200, "test");
+            for (int i = 0; i < 40; i++) From(r, new IPEndPoint(IPAddress.Loopback, 31000 + i), WifiTransport.TypeHello, -Ticks(11000), "Phone " + i);
+            Assert(r.ListPeers().Count == 32 && r.ListPeers().All(p => !p.Recent), "Unbounded or stale presence");
+        });
+        Test("Two real UDP senders switch through receiver without mixed audio or takeover", () => {
+            using var r = new WifiReceiver(log, 0, 0, 80, 200, "test");
+            Assert(r.Start(), "Cannot bind test receiver");
+            var rx = (System.Net.Sockets.Socket)Get(r, "audioSocket");
+            var target = new IPEndPoint(IPAddress.Loopback, ((IPEndPoint)rx.LocalEndPoint).Port);
+            using var a = new System.Net.Sockets.UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+            using var b = new System.Net.Sockets.UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+            void Send(System.Net.Sockets.UdpClient sender, byte type, string name = null, uint seq = 0) {
+                var payload = type == WifiTransport.TypeHello ? System.Text.Encoding.UTF8.GetBytes(name) : type == WifiTransport.TypeAudio ? Signal(5) : null;
+                var packet = WifiTransport.BuildPacket(type, 0, seq, 0, payload); sender.Send(packet, packet.Length, target);
+            }
+            void Wait(Func<bool> check, string message) => Assert(SpinWait.SpinUntil(check, 2000), message);
+            Send(a, WifiTransport.TypeHello, "UDP Phone A"); Send(b, WifiTransport.TypeHello, "UDP Phone B");
+            Wait(() => r.ListPeers().Count == 2, "Discovery over UDP failed");
+            string aId = a.Client.LocalEndPoint.ToString(), bId = b.Client.LocalEndPoint.ToString();
+            Assert(r.SelectPeer(aId), "Select A"); Send(a, WifiTransport.TypeAudio);
+            Wait(() => r.GetSnapshot().Received == 1, "A audio not received");
+            Assert(r.SelectPeer(bId) && r.GetSnapshot().BufferMs == 0, "Switch did not clear A PCM");
+            long foreign = r.GetSnapshot().Foreign;
+            Send(a, WifiTransport.TypeStart); Send(a, WifiTransport.TypeAudio, seq: 1); Send(a, WifiTransport.TypeStop);
+            Wait(() => r.GetSnapshot().Foreign >= foreign + 3, "Old source was not rejected");
+            Assert(r.GetSnapshot().Remote == bId && r.GetSnapshot().State == SinkState.Armed, "Old source changed selected session");
+            Send(b, WifiTransport.TypeAudio);
+            Wait(() => r.GetSnapshot().Remote == bId && r.GetSnapshot().Received == 1 && r.GetSnapshot().BufferMs == 5, "B audio not independently buffered");
+        });
         Console.WriteLine($"{passed} tests passed");
     }
     static void Record(int seconds, string path)

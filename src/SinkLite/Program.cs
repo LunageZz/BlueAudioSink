@@ -240,6 +240,7 @@ namespace SinkLite
 
         private static int RunWindow(SinkController controller, CliOptions options)
         {
+            ShellAppearance.Initialize(log);
             Settings settings = Settings.Load();
             bool wifiStart = options.Wifi ||
                 string.Equals(settings.Mode, "wifi", StringComparison.OrdinalIgnoreCase);

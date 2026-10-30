@@ -192,6 +192,8 @@ namespace SinkLite.UI
                 throw new System.ComponentModel.Win32Exception(error, "创建主窗口失败");
             }
             log.Info("Ui.WindowHandle", ("hwnd", hwnd.ToInt64()));
+            Win32.SendMessage(hwnd, 0x0080, new IntPtr(1), wc.hIcon); // WM_SETICON, ICON_BIG
+            Win32.SendMessage(hwnd, 0x0080, IntPtr.Zero, wc.hIconSm); // ICON_SMALL
             Win32.SetTimer(hwnd, new IntPtr(IdTimer), 1000, IntPtr.Zero);
             controller.SnapshotChanged += OnSnapshotChanged;
             log.Info("Ui.Created", ("dpi", (int)dpi), ("scale", scale), ("mode", wifiMode ? "wifi" : "bluetooth"));

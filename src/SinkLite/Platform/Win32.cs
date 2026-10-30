@@ -240,6 +240,9 @@ namespace SinkLite.Platform
         [DllImport("user32.dll")]
         public static extern IntPtr LoadIcon(IntPtr instance, IntPtr name);
 
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+
         [DllImport("user32.dll")]
         public static extern void DestroyIcon(IntPtr icon);
 

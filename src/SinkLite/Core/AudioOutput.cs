@@ -23,6 +23,8 @@ namespace SinkLite.Core
         private readonly byte[] fade;
         private WasapiOut output;
         private bool disposed;
+        public string OutputName { get; private set; }
+        public bool IsPlaying { get { lock (sync) { return output != null && output.PlaybackState == PlaybackState.Playing; } } }
 
         public AudioOutput(Log log)
         {
@@ -84,6 +86,13 @@ namespace SinkLite.Core
                             log.Error("Player.Fault", ("code", "PlaybackStopped"), ("detail", e.Exception.Message));
                     };
                     output = created;
+                    try
+                    {
+                        using (MMDeviceEnumerator devices = new MMDeviceEnumerator())
+                        using (MMDevice device = devices.GetDefaultAudioEndpoint(DataFlow.Render, Role.Console))
+                            OutputName = device.FriendlyName;
+                    }
+                    catch { OutputName = "电脑默认输出"; }
                     log.Info(
                         "Player.Created",
                         ("format", "48000/16/2"),

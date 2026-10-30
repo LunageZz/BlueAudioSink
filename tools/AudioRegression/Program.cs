@@ -5,6 +5,7 @@ using NAudio.Wave;
 using NAudio.CoreAudioApi;
 using SinkLite.Core;
 using SinkLite.Platform;
+using SinkLite.UI;
 
 class Program
 {
@@ -120,6 +121,39 @@ class Program
             }
             Assert(actual.ToArray().SequenceEqual(expected.ToArray().Take((int)actual.Length)), "PCM mismatch");
             Assert(b.Underruns == 0 && b.PaddingFrames == 0 && b.Overflows == 0, "Counter mismatch");
+        });
+        Test("Silent PCM is connected and quiet, not audible playback", () => {
+            var snapshot = new WifiSnapshot { Enabled = true, State = SinkState.Flowing, Remote = "192.168.0.2:45678",
+                LastAudioAgeMs = 10, OutputActive = true, HasAudibleSignal = false };
+            var view = ConnectionPresentation.Wifi(snapshot);
+            Assert(view.Title.Contains("静音") && view.PhoneReady && view.StreamReady && view.OutputReady, "Silent stream label");
+            snapshot.HasAudibleSignal = true;
+            Assert(ConnectionPresentation.Wifi(snapshot).Title.Contains("正在播放"), "Active audio label");
+        });
+        Test("A remembered phone endpoint alone is not a live connection", () => {
+            var snapshot = new WifiSnapshot { Enabled = true, State = SinkState.Armed, Remote = "192.168.0.2:45678", ControlAgeMs = 7000 };
+            var view = ConnectionPresentation.Wifi(snapshot);
+            Assert(!view.PhoneReady && view.Title == "等待手机连接", "Old endpoint counted live");
+            snapshot.ControlAgeMs = 20;
+            Assert(ConnectionPresentation.Wifi(snapshot).Title == "手机已连接", "Control link not recognized");
+        });
+        Test("Stale audio cannot keep showing active playback", () => {
+            var view = ConnectionPresentation.Wifi(new WifiSnapshot { Enabled = true, State = SinkState.Flowing,
+                Remote = "192.168.0.2:45678", LastAudioAgeMs = 1500, HasAudibleSignal = true, OutputActive = true });
+            Assert(view.Title == "音频暂时中断" && !view.StreamReady && !view.OutputReady, "Stale playing label");
+        });
+        Test("Recovering, draining and actual output failure remain distinct", () => {
+            var snapshot = new WifiSnapshot { Enabled = true, State = SinkState.Flowing, LastAudioAgeMs = 10, Recovering = true };
+            Assert(ConnectionPresentation.Wifi(snapshot).Title == "正在恢复播放", "Recovery label");
+            snapshot.Draining = true;
+            Assert(ConnectionPresentation.Wifi(snapshot).Title == "正在结束播放", "Drain label");
+            snapshot.Draining = false; snapshot.Recovering = false;
+            Assert(ConnectionPresentation.Wifi(snapshot).Title == "播放设备尚未就绪", "Output failure hidden");
+        });
+        Test("A fault stays actionable even if Wi-Fi failed to enable", () => {
+            var view = ConnectionPresentation.Wifi(new WifiSnapshot { Enabled = false, State = SinkState.Faulted, Detail = "端口绑定失败" });
+            Assert(view.Tone == ConnectionTone.Error && view.Description == "端口绑定失败", "Fault lost");
+            Assert(ConnectionPresentation.Wifi(new WifiSnapshot { Enabled = true, State = SinkState.Busy }).Title == "正在准备连接", "Preparing label lost");
         });
         Console.WriteLine($"{passed} tests passed");
     }

@@ -57,8 +57,8 @@ namespace SinkLite.Core
         private readonly Log log;
         private readonly int controlPort;
         private readonly int audioPort;
-        private readonly int baseMs;
-        private readonly int maxMs;
+        private int baseMs;
+        private int maxMs;
         private readonly string deviceName;
         private readonly Stopwatch clock = Stopwatch.StartNew();
 
@@ -97,6 +97,7 @@ namespace SinkLite.Core
         private long drainEmptyTicks;
         private long stopTicks;
         private long lastAudioTicks;
+        private long lastSignalTicks;
         private long lastAnyTicks;
         private long prevArrivalTicks;
         private uint lastTimestampUs;
@@ -147,6 +148,27 @@ namespace SinkLite.Core
             maxMs = Math.Clamp(bufferMaxMs, baseMs, 1000);
             this.deviceName = string.IsNullOrWhiteSpace(deviceName) ? "BlueAudioSink" : deviceName;
             targetMs = baseMs;
+        }
+
+        public void SetBufferBase(int milliseconds)
+        {
+            lock (sync)
+            {
+                baseMs = Math.Clamp(milliseconds, 40, 800);
+                maxMs = Math.Max(maxMs, baseMs);
+                targetMs = Math.Max(baseMs, targetMs);
+            }
+        }
+
+        public void RefreshOutput()
+        {
+            lock (sync)
+            {
+                DetachOutputLocked();
+                playing = false;
+                rebuffering = false;
+                if (sessionEndpoint != null) { state = SinkState.LinkReady; detail = "正在切换播放设备"; }
+            }
         }
 
         public bool Start()
@@ -467,6 +489,12 @@ namespace SinkLite.Core
 
                 lastAudioTicks = now;
                 lastTimestampUs = header.TimestampUs;
+                // Read-only activity observation for the UI; never changes packet scheduling.
+                for (int sample = WifiTransport.HeaderSize; sample + 1 < length; sample += 2)
+                {
+                    short value = (short)(data[sample] | data[sample + 1] << 8);
+                    if (value > 32 || value < -32) { lastSignalTicks = now; break; }
+                }
 
                 byte[] rented = ArrayPool<byte>.Shared.Rent(WifiTransport.PayloadBytes);
                 Buffer.BlockCopy(data, WifiTransport.HeaderSize, rented, 0, WifiTransport.PayloadBytes);
@@ -1033,6 +1061,7 @@ namespace SinkLite.Core
             sessionStartUs = startUs;
             lastAudioTicks = now;
             lastTimestampUs = 0;
+            lastSignalTicks = 0;
             prevAudioValid = false;
             prevArrivalTicks = 0;
             lastAdaptTicks = now;
@@ -1095,6 +1124,7 @@ namespace SinkLite.Core
             stopTicks = 0;
             lastAudioTicks = 0;
             lastTimestampUs = 0;
+            lastSignalTicks = 0;
             prevAudioValid = false;
             prevArrivalTicks = 0;
             targetMs = baseMs;
@@ -1311,6 +1341,13 @@ namespace SinkLite.Core
 
                 WifiSnapshot snapshot = new WifiSnapshot();
                 snapshot.Enabled = true;
+                snapshot.LastAudioAgeMs = lastAudioTicks == 0 ? double.NaN : ToMilliseconds(now - lastAudioTicks);
+                snapshot.ControlAgeMs = lastPongTicks == 0 ? double.NaN : ToMilliseconds(now - lastPongTicks);
+                snapshot.HasAudibleSignal = lastSignalTicks != 0 && now - lastSignalTicks < TicksFromMs(1200);
+                snapshot.OutputActive = playing && !rebuffering && output != null && output.IsPlaying;
+                snapshot.Draining = draining;
+                snapshot.Recovering = rebuffering;
+                snapshot.OutputName = output == null ? null : output.OutputName;
                 snapshot.State = state;
                 snapshot.Detail = detail;
                 snapshot.Remote = remote == null ? null : remote.ToString();

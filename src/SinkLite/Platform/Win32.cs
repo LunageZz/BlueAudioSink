@@ -32,11 +32,13 @@ namespace SinkLite.Platform
         public const int WS_CAPTION = 0x00C00000;
         public const int WS_SYSMENU = 0x00080000;
         public const int WS_MINIMIZEBOX = 0x00020000;
+        public const int WS_MAXIMIZEBOX = 0x00010000;
         public const int WS_VISIBLE = 0x10000000;
         public const int WS_CHILD = 0x40000000;
         public const int WS_EX_TOOLWINDOW = 0x00000080;
 
         public const int DT_LEFT = 0x00000000;
+        public const int DT_WORDBREAK = 0x00000010;
         public const int DT_RIGHT = 0x00000002;
         public const int DT_CENTER = 0x00000001;
         public const int DT_VCENTER = 0x00000004;
@@ -115,6 +117,23 @@ namespace SinkLite.Platform
             public string lpszClassName;
             public IntPtr hIconSm;
         }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct MINMAXINFO
+        {
+            public POINT ptReserved, ptMaxSize, ptMaxPosition, ptMinTrackSize, ptMaxTrackSize;
+        }
+
+        [DllImport("user32.dll")] public static extern short GetKeyState(int key);
+        [DllImport("user32.dll")] public static extern IntPtr SetCursor(IntPtr cursor);
+        [DllImport("user32.dll")] public static extern bool OpenClipboard(IntPtr owner);
+        [DllImport("user32.dll")] public static extern bool CloseClipboard();
+        [DllImport("user32.dll")] public static extern bool EmptyClipboard();
+        [DllImport("user32.dll")] public static extern IntPtr SetClipboardData(uint format, IntPtr memory);
+        [DllImport("kernel32.dll")] public static extern IntPtr GlobalAlloc(uint flags, UIntPtr bytes);
+        [DllImport("kernel32.dll")] public static extern IntPtr GlobalLock(IntPtr memory);
+        [DllImport("kernel32.dll")] public static extern bool GlobalUnlock(IntPtr memory);
+        [DllImport("kernel32.dll")] public static extern IntPtr GlobalFree(IntPtr memory);
 
         public delegate IntPtr WndProcDelegate(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 

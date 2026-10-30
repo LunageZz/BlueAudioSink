@@ -63,6 +63,13 @@ namespace SinkLite.Core
 
         public long Dropped { get; set; }
 
+        public double LastAudioAgeMs { get; set; } = double.NaN;
+        public double ControlAgeMs { get; set; } = double.NaN;
+        public bool HasAudibleSignal { get; set; }
+        public bool OutputActive { get; set; }
+        public bool Draining { get; set; }
+        public bool Recovering { get; set; }
+        public string OutputName { get; set; }
         public int Port { get; set; }
 
         public string LocalAddress { get; set; }
@@ -79,10 +86,13 @@ namespace SinkLite.Core
         private readonly Log log;
         private readonly object sync = new object();
         private readonly int audioPort;
-        private readonly int bufferBaseMs;
-        private readonly int bufferMaxMs;
+        private int bufferBaseMs;
+        private int bufferMaxMs;
         private readonly string deviceName;
         private readonly string localAddress;
+        private string cachedRoutePeer;
+        private string cachedPeerAddress;
+        private DateTime routeRefreshAt;
 
         private WifiReceiver receiver;
         private System.Threading.Timer offerTimer;
@@ -160,6 +170,21 @@ namespace SinkLite.Core
                 log.Info("Wifi.ModeOn", ("mode", "wifi"));
                 return true;
             }
+        }
+
+        public void SetBufferBase(int milliseconds)
+        {
+            lock (sync)
+            {
+                bufferBaseMs = Math.Clamp(milliseconds, 40, 800);
+                bufferMaxMs = Math.Max(bufferMaxMs, bufferBaseMs);
+                if (receiver != null) receiver.SetBufferBase(bufferBaseMs);
+            }
+        }
+
+        public void RefreshOutput()
+        {
+            lock (sync) { if (receiver != null) receiver.RefreshOutput(); }
         }
 
         public void Stop()
@@ -249,7 +274,16 @@ namespace SinkLite.Core
                     WifiSnapshot snapshot = rx.GetSnapshot();
                     snapshot.Enabled = true;
                     snapshot.Port = audioPort;
-                    snapshot.LocalAddress = localAddress;
+                    lock (sync)
+                    {
+                        if (snapshot.Remote != cachedRoutePeer || DateTime.Now >= routeRefreshAt)
+                        {
+                            cachedRoutePeer = snapshot.Remote;
+                            cachedPeerAddress = string.IsNullOrEmpty(snapshot.Remote) ? localAddress : FindLocalIPv4(snapshot.Remote);
+                            routeRefreshAt = DateTime.Now.AddSeconds(10);
+                        }
+                        snapshot.LocalAddress = cachedPeerAddress;
+                    }
                     return snapshot;
                 }
 
@@ -263,14 +297,29 @@ namespace SinkLite.Core
             }
         }
 
-        private static string FindLocalIPv4()
+        private static string FindLocalIPv4(string peer = null)
         {
+            // Prefer the actual phone route; otherwise show an active Wi-Fi address
+            // instead of an unrelated VPN/default internet route. No probe is sent.
+            if (string.IsNullOrEmpty(peer))
+            {
+                try
+                {
+                    foreach (NetworkInterface nic in NetworkInterface.GetAllNetworkInterfaces())
+                        if (nic.OperationalStatus == OperationalStatus.Up && nic.NetworkInterfaceType == NetworkInterfaceType.Wireless80211)
+                            foreach (UnicastIPAddressInformation address in nic.GetIPProperties().UnicastAddresses)
+                                if (address.Address.AddressFamily == AddressFamily.InterNetwork && !address.Address.ToString().StartsWith("169.254."))
+                                    return address.Address.ToString();
+                }
+                catch { }
+            }
             // 用 UDP connect 让系统按默认路由选源地址；不会真正发包。
             try
             {
                 using (Socket probe = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp))
                 {
-                    probe.Connect(new IPEndPoint(IPAddress.Parse("8.8.8.8"), 53));
+                    IPEndPoint remote;
+                    probe.Connect(IPEndPoint.TryParse(peer, out remote) ? remote : new IPEndPoint(IPAddress.Parse("8.8.8.8"), 53));
                     IPEndPoint local = probe.LocalEndPoint as IPEndPoint;
                     if (local != null && !local.Address.Equals(IPAddress.Any))
                     {
@@ -324,14 +373,8 @@ namespace SinkLite.Core
             {
             }
 
-            if (!string.IsNullOrEmpty(linkLocal))
-            {
-                return linkLocal;
-            }
-            if (!string.IsNullOrEmpty(fallback))
-            {
-                return fallback;
-            }
+            if (!string.IsNullOrEmpty(fallback)) return fallback;
+            if (!string.IsNullOrEmpty(linkLocal)) return linkLocal;
             return "127.0.0.1";
         }
 

@@ -1,13 +1,13 @@
 # BlueAudioSink
 
-让 Windows 电脑作为蓝牙音频接收端，把手机的声音传过来用电脑的耳机/音箱播放。
+让 Windows 接收手机音频，通过电脑的耳机或音箱播放。支持蓝牙与局域网 Wi-Fi 两种模式。
 
 本项目是**全新实现**，不是对旧 WinUI 项目的修补。核心修正只有一个：
 
 > 旧实现把 `OpenAsync` 返回 Success 当成了"已连接"。但那只是**控制层**成功，
 > **不代表手机已经在发送音频**。于是界面显示"已连接"，而用户听到的是静音。
 
-## 它到底能保证什么
+## 蓝牙模式的能力边界
 
 | 层面 | 由谁决定 | 本项目 |
 | --- | --- | --- |
@@ -19,7 +19,7 @@
 **因此本项目不承诺"音频一定不卡顿、一定能传进来"**，它承诺的是：连接稳定、失败可归因、
 音频流向可检测可纠正，并且**不会用假的"已连接"骗你**。
 
-## 四段状态
+## 蓝牙四段状态
 
 旧实现只有"已连接/未连接"两态，信息量为零。本项目把状态拆成四段：
 
@@ -62,8 +62,14 @@ Idle → Busy → Armed(控制层就绪) → LinkReady(手机端点出现) → F
 .\BlueAudioSink.exe --help
 ```
 
-主界面包含：状态显示、音频源选择、输出设备选择、连接/断开/刷新按钮，以及「设置」页。
-设置页提供：开机自启、启动时自动连接、打开日志目录。
+顶部在「蓝牙 / Wi-Fi」之间切换，右侧「设置」为两个模式共用入口，进入设置不会停止音频。
+
+- 蓝牙页：选择已配对手机，连接、断开和刷新设备。
+- Wi-Fi 页：连接状态、发送手机、实际播放设备、网络往返时间/缓冲/丢包；技术计数在「连接详情」中展开。手机端需要安装配套 Android App，并与电脑连接同一网络。
+- 统一设置：播放设备、开机启动、蓝牙自动连接、Wi-Fi 预缓冲和日志目录。支持 Tab、Enter、Space 与 Escape。
+- 本地打包文件：`artifacts/BlueAudioSink-0.1.0.exe`；Android 测试 APK 为 `artifacts/BlueAudioSink-Sender-0.1.0.apk`。
+
+Wi-Fi 区分等待连接、已连接待发送、准备播放、正在播放、当前静音和暂时中断；收到静音数据不会显示成有声播放。界面规格与验证见 [电脑端交互优化](docs/10-desktop-ux.md)。
 
 **关闭窗口即退出程序**（不再常驻托盘）。
 
@@ -89,13 +95,12 @@ dotnet build .\BlueAudioSink.sln -c Debug -p:Platform=x64
 dotnet publish .\src\SinkLite\SinkLite.csproj -c Release -p:Platform=x64
 ```
 
-发布产物：`srcSinkLiteindRelease
-et8.0-windows10.0.19041.0win-x64publishBlueAudioSink.exe`（约 10.7 MB 单文件）。
+默认发布产物：`src/SinkLite/bin/x64/Release/net8.0-windows10.0.19041.0/win-x64/publish/BlueAudioSink.exe`（约 10.8 MB，自包含单文件）。
 
 ### 构建上的两个坑（已在项目内规避）
 
 1. **绝不能改 `OutputType` 为 `WinExe`**：SDK 会因此引入 `Microsoft.WindowsDesktop.App`，实测体积 10 MB → 44 MB。
-   托盘是不弹黑窗的需求，改用发布后 `editbin /SUBSYSTEM:WINDOWS` 实现。
+   为避免弹出控制台窗口，使用发布后 `editbin /SUBSYSTEM:WINDOWS` 实现。
 2. **绝不能引用 `NAudio` 主包**：它会连带 `NAudio.WinForms`，进而把 WPF 运行时拖进发布产物。
    只引用 `NAudio.Wasapi`（实测 51.8 MB → 10.67 MB）。
 

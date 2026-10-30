@@ -169,8 +169,8 @@ namespace SinkLite.UI
             wc.lpfnWndProc = System.Runtime.InteropServices.Marshal.GetFunctionPointerForDelegate(wndProc);
             wc.hInstance = instance;
             wc.hCursor = Win32.LoadCursor(IntPtr.Zero, Win32.IDC_ARROW);
-            wc.hIcon = LoadAppIcon();
-            wc.hIconSm = LoadAppIcon();
+            wc.hIcon = LoadAppIcon(S(32));
+            wc.hIconSm = LoadAppIcon(S(16));
             wc.lpszClassName = "BlueAudioSinkMainWindow";
             ushort registered = Win32.RegisterClassEx(ref wc);
             int registrationError = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
@@ -212,7 +212,7 @@ namespace SinkLite.UI
         }
 
         /// <summary>从嵌入资源加载窗口图标，避免额外文件依赖。</summary>
-        private static IntPtr LoadAppIcon()
+        private static IntPtr LoadAppIcon(int size)
         {
             try
             {
@@ -235,7 +235,27 @@ namespace SinkLite.UI
                         read += n;
                     }
 
-                    return Win32.CreateIconFromResourceEx(data, (uint)read, true, 0x00030000u, 32, 32, 0u);
+                    // CreateIconFromResourceEx expects a single RT_ICON image, not the ICO directory.
+                    if (read < 6 || BitConverter.ToUInt16(data, 2) != 1) return IntPtr.Zero;
+                    int count = BitConverter.ToUInt16(data, 4);
+                    int bestOffset = 0, bestLength = 0, bestDistance = int.MaxValue;
+                    for (int i = 0; i < count && 6 + (i + 1) * 16 <= read; i++)
+                    {
+                        int entry = 6 + i * 16;
+                        int width = data[entry] == 0 ? 256 : data[entry];
+                        int height = data[entry + 1] == 0 ? 256 : data[entry + 1];
+                        uint length = BitConverter.ToUInt32(data, entry + 8);
+                        uint offset = BitConverter.ToUInt32(data, entry + 12);
+                        int distance = Math.Abs(width - size) + Math.Abs(height - size);
+                        if (length > 0 && (ulong)offset + length <= (ulong)read && distance < bestDistance)
+                        {
+                            bestOffset = (int)offset; bestLength = (int)length; bestDistance = distance;
+                        }
+                    }
+                    if (bestLength == 0) return IntPtr.Zero;
+                    byte[] image = new byte[bestLength];
+                    Buffer.BlockCopy(data, bestOffset, image, 0, bestLength);
+                    return Win32.CreateIconFromResourceEx(image, (uint)image.Length, true, 0x00030000u, size, size, 0u);
                 }
             }
             catch

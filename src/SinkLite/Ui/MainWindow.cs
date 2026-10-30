@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Threading.Tasks;
 using SinkLite.Core;
 using SinkLite.Platform;
 
@@ -53,6 +54,10 @@ namespace SinkLite.UI
         private const int AreaNextPage = 333;
         private const int AreaDeviceBluetooth = 334;
         private const int AreaDeviceWifi = 335;
+        private const int AreaSettingsNetwork = 340;
+        private const int AreaFirewallEnable = 341;
+        private const int AreaFirewallDisable = 342;
+        private const int AreaFirewallCheck = 343;
 
         private readonly SinkController controller;
         private readonly Log log;
@@ -94,6 +99,11 @@ namespace SinkLite.UI
         private DateTime noticeUntil;
 
         private bool deviceSettings;
+        private bool networkSettings;
+        private FirewallStatus firewallStatus = new FirewallStatus();
+        private Task<FirewallResult> firewallTask;
+        private bool firewallChanging;
+        private string firewallMessage;
         private int devicePage;
         private sealed class DeviceChoice
         {
@@ -325,7 +335,7 @@ namespace SinkLite.UI
             return string.Concat(
                 (int)s.State, "|", s.Detail ?? "", "|", s.DeviceName ?? "", "|",
                 s.Peak.ToString("0.000"), "|", s.Hint ?? "", "|",
-                deviceSettings, "|", devicePage, "|", deviceListKey, "|", hoverArea, "|", pressedArea, "|",
+                deviceSettings, "|", networkSettings, "|", firewallTask != null, "|", firewallMessage, "|", firewallStatus.Available, "|", firewallStatus.RuleReady, "|", devicePage, "|", deviceListKey, "|", hoverArea, "|", pressedArea, "|",
                 dropdownOpen ? 1 : 0, "|", settingsMode ? 1 : 0, "|",
                 controller.Devices.Count, "|", cachedOutputs.Count, "|", cachedPreferredName, "|",
                 wifiMode ? 1 : 0, "|", (int)w.State, "|", w.Enabled ? 1 : 0, "|",
@@ -345,7 +355,33 @@ namespace SinkLite.UI
         {
             RefreshOutputCache(false);
             RefreshConnectionDevices();
+            if (firewallTask != null && firewallTask.IsCompleted)
+            {
+                try
+                {
+                    FirewallResult result = firewallTask.GetAwaiter().GetResult();
+                    if (result.Status != null) firewallStatus = result.Status;
+                    firewallMessage = result.Message;
+                }
+                catch { firewallMessage = "操作失败，请重新检测。"; }
+                firewallTask = null;
+                RequestRepaint(true);
+            }
             RequestRepaint(false);
+        }
+
+        private void BeginFirewallOperation(int area)
+        {
+            if (firewallTask != null) return;
+            int port = wifi.Port;
+            IntPtr owner = hwnd;
+            firewallChanging = area != AreaFirewallCheck;
+            log.Info("Ui.FirewallRequested", ("operation", area == AreaFirewallCheck ? "query" : area == AreaFirewallEnable ? "enable" : "disable"), ("port", port));
+            firewallMessage = null;
+            firewallTask = area == AreaFirewallCheck
+                ? Task.Run(() => new FirewallResult { Status = WifiFirewall.Query(port) })
+                : Task.Run(() => WifiFirewall.RequestChange(area == AreaFirewallEnable, port, owner));
+            RequestRepaint(true);
         }
 
         private void RefreshConnectionDevices()
@@ -471,6 +507,10 @@ namespace SinkLite.UI
             int right = m.Left + m.ContentWidth;
             switch (area)
             {
+                case AreaSettingsNetwork: return Rect(m.Left + S(268), S(60), m.Left + S(340), S(90));
+                case AreaFirewallEnable: return Rect(m.Left, S(240), m.Left + (m.ContentWidth - S(8)) / 2, S(274));
+                case AreaFirewallDisable: return Rect(m.Left + (m.ContentWidth + S(8)) / 2, S(240), right, S(274));
+                case AreaFirewallCheck: return Rect(m.Left, S(288), m.Left + S(118), S(320));
                 case AreaSettingsGeneral: return Rect(m.Left + S(76), S(60), m.Left + S(148), S(90));
                 case AreaSettingsDevices: return Rect(m.Left + S(156), S(60), m.Left + S(260), S(90));
                 case AreaDeviceBluetooth: return Rect(m.Left, S(104), m.Left + S(88), S(136));
@@ -518,8 +558,14 @@ namespace SinkLite.UI
             if (settingsMode)
             {
                 if (Contains(m.BackRect, x, y)) return AreaBack;
-                foreach (int tab in new[] { AreaSettingsGeneral, AreaSettingsDevices })
+                foreach (int tab in new[] { AreaSettingsGeneral, AreaSettingsDevices, AreaSettingsNetwork })
                     if (Contains(SettingsControlRect(m, tab), x, y)) return tab;
+                if (networkSettings)
+                {
+                    foreach (int button in new[] { AreaFirewallEnable, AreaFirewallDisable, AreaFirewallCheck })
+                        if (Contains(SettingsControlRect(m, button), x, y)) return IsEnabled(button) ? button : AreaNone;
+                    return AreaNone;
+                }
                 if (deviceSettings)
                 {
                     foreach (int button in new[] { AreaDeviceBluetooth, AreaDeviceWifi, AreaPreviousPage, AreaNextPage })
@@ -557,7 +603,9 @@ namespace SinkLite.UI
         private bool IsEnabled(int area)
         {
             if (modeSwitching) return false;
-            if (area == AreaOutput) return settingsMode && !deviceSettings && cachedOutputs.Count > 0;
+            if (area == AreaOutput) return settingsMode && !deviceSettings && !networkSettings && cachedOutputs.Count > 0;
+            if (area == AreaFirewallEnable || area == AreaFirewallCheck) return firewallTask == null;
+            if (area == AreaFirewallDisable) return firewallTask == null && firewallStatus.Available && firewallStatus.RuleExists;
             if (area == AreaPreviousPage) return devicePage > 0;
             if (area == AreaNextPage) return (devicePage + 1) * MaxDeviceRows < connectionDevices.Count;
             if (area >= AreaDeviceBase && area < AreaDropdownBase)
@@ -653,9 +701,17 @@ namespace SinkLite.UI
             {
                 case AreaSettingsGeneral:
                 case AreaSettingsDevices:
+                case AreaSettingsNetwork:
                     deviceSettings = area == AreaSettingsDevices;
+                    networkSettings = area == AreaSettingsNetwork;
+                    if (networkSettings) BeginFirewallOperation(AreaFirewallCheck);
                     dropdownOpen = false;
                     RefreshConnectionDevices();
+                    return;
+                case AreaFirewallEnable:
+                case AreaFirewallDisable:
+                case AreaFirewallCheck:
+                    BeginFirewallOperation(area);
                     return;
                 case AreaDeviceBluetooth:
                 case AreaDeviceWifi:
@@ -688,6 +744,7 @@ namespace SinkLite.UI
                     settingsMode = true;
                     pageSettings = Settings.Load();
                     autoStartEnabled = AutoStart.IsEnabled();
+                    if (networkSettings) BeginFirewallOperation(AreaFirewallCheck);
                     RefreshConnectionDevices();
                     focusArea = keyboardFocus ? AreaBack : AreaSettings;
                     dropdownOpen = false;
@@ -906,8 +963,9 @@ namespace SinkLite.UI
                 }
                 else if (settingsMode)
                 {
-                    areas.AddRange(new[] { AreaBack, AreaSettingsGeneral, AreaSettingsDevices });
-                    if (deviceSettings)
+                    areas.AddRange(new[] { AreaBack, AreaSettingsGeneral, AreaSettingsDevices, AreaSettingsNetwork });
+                    if (networkSettings) areas.AddRange(new[] { AreaFirewallEnable, AreaFirewallDisable, AreaFirewallCheck });
+                    else if (deviceSettings)
                     {
                         areas.AddRange(new[] { AreaDeviceBluetooth, AreaDeviceWifi });
                         for (int i = 0; i < ComputeMetrics().VisibleRows; i++) areas.Add(AreaDeviceBase + i);
@@ -1329,8 +1387,10 @@ namespace SinkLite.UI
         private void DrawSettings(IntPtr hdc, Metrics m)
         {
             DrawButton(hdc, m.BackRect, "返回", AreaBack, false);
-            DrawModeTab(hdc, SettingsControlRect(m, AreaSettingsGeneral), "常规", !deviceSettings, AreaSettingsGeneral);
+            DrawModeTab(hdc, SettingsControlRect(m, AreaSettingsGeneral), "常规", !deviceSettings && !networkSettings, AreaSettingsGeneral);
             DrawModeTab(hdc, SettingsControlRect(m, AreaSettingsDevices), "连接设备", deviceSettings, AreaSettingsDevices);
+            DrawModeTab(hdc, SettingsControlRect(m, AreaSettingsNetwork), "网络", networkSettings, AreaSettingsNetwork);
+            if (networkSettings) { DrawNetworkSettings(hdc, m); return; }
             if (deviceSettings) { DrawDeviceSettings(hdc, m); return; }
             Win32.RECT general = Rect(m.Left, S(104), m.Left + m.ContentWidth, S(232));
             RoundFill(hdc, general, S(8), brushCard); RoundBorder(hdc, general, S(8), brushBorder);
@@ -1348,6 +1408,33 @@ namespace SinkLite.UI
             Text(hdc, "缓冲越高越抗抖动，开始播放会稍晚。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(12), S(376), m.Left + m.ContentWidth - S(12), S(394)));
             DrawButton(hdc, m.LogsButtonRect, "打开日志目录", AreaOpenLogs, false);
             Text(hdc, "BlueAudioSink 0.1.0", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(154), S(412), m.Left + m.ContentWidth, S(444)));
+        }
+
+        private void DrawNetworkSettings(IntPtr hdc, Metrics m)
+        {
+            int right = m.Left + m.ContentWidth;
+            Win32.RECT card = Rect(m.Left, S(104), right, S(224));
+            RoundFill(hdc, card, S(8), brushCard); RoundBorder(hdc, card, S(8), brushBorder);
+            Text(hdc, "Wi-Fi 防火墙", fontHeading, Win32.Rgb(23, 40, 63), Rect(m.Left + S(12), S(114), right - S(12), S(140)));
+            string state = firewallTask != null ? firewallChanging ? "等待 Windows 授权与配置…" : "正在检测…"
+                : !firewallStatus.Available ? "无法读取防火墙状态" : firewallStatus.RuleReady ? "已开启局域网放行"
+                : firewallStatus.RuleExists ? "放行规则需要修复" : "尚未添加本程序的放行规则";
+            Text(hdc, state, fontBody, firewallStatus.RuleReady ? Win32.Rgb(20, 120, 75) : Win32.Rgb(23, 40, 63), Rect(m.Left + S(12), S(146), right - S(12), S(172)));
+            Text(hdc, "仅放行本程序 · 专用网络 · 同一局域网", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(12), S(180), right - S(12), S(198)));
+            Text(hdc, "UDP " + WifiFirewall.Ports(wifi.Port) + "；移动软件后请重新开启。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(12), S(200), right - S(12), S(218)));
+            DrawButton(hdc, SettingsControlRect(m, AreaFirewallEnable), firewallStatus.RuleReady ? "重新配置" : "开启放行", AreaFirewallEnable, true);
+            DrawButton(hdc, SettingsControlRect(m, AreaFirewallDisable), "移除本程序规则", AreaFirewallDisable, false);
+            DrawButton(hdc, SettingsControlRect(m, AreaFirewallCheck), "重新检测", AreaFirewallCheck, false);
+            Text(hdc, "修改时需要管理员授权", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(132), S(288), right, S(320)));
+            string hint = firewallTask != null ? "正在处理，请稍候。" : !firewallStatus.Available ? firewallStatus.Error ?? "点击重新检测以读取状态。"
+                : firewallStatus.InboundBlocked || firewallStatus.ModifyState != 0 ? "系统策略限制入站连接，请联系管理员。"
+                : !firewallStatus.PrivateActive ? "未检测到专用网络，规则暂不生效。"
+                : !firewallStatus.PrivateFirewallEnabled ? "专用网络防火墙当前已关闭。" : "请确认手机与电脑所在网络设为专用网络。";
+            Text(hdc, hint, fontSmall, Win32.Rgb(151, 91, 22), Rect(m.Left, S(338), right, S(360)));
+            Text(hdc, "不关闭防火墙，也不修改公共网络或其他规则。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left, S(366), right, S(386)));
+            Text(hdc, "阻断规则、其他防火墙或网络隔离仍可能影响连接。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left, S(390), right, S(410)));
+            if (!string.IsNullOrEmpty(firewallMessage))
+                Text(hdc, firewallMessage, fontSmall, Win32.Rgb(0, 93, 165), Rect(m.Left, S(420), right, S(444)));
         }
 
         private void DrawPreference(IntPtr hdc, Metrics m, int top, int area, string label, string hint, bool value)
@@ -1530,6 +1617,10 @@ namespace SinkLite.UI
             {
                 case AreaSettingsGeneral:
                 case AreaSettingsDevices:
+                case AreaSettingsNetwork:
+                case AreaFirewallEnable:
+                case AreaFirewallDisable:
+                case AreaFirewallCheck:
                 case AreaPreviousPage:
                 case AreaNextPage:
                 case AreaDeviceBluetooth:

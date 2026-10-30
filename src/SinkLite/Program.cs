@@ -17,6 +17,11 @@ namespace SinkLite
         [STAThread]
         private static int Main(string[] args)
         {
+            if (args != null && args.Length > 0 && args[0] == WifiFirewall.HelperArgument)
+            {
+                if (args.Length != 3 || !int.TryParse(args[2], out int port)) return 2;
+                return WifiFirewall.RunHelper(args[1], port);
+            }
             CliOptions options = Cli.Parse(args);
             if (options.ShowHelp)
             {

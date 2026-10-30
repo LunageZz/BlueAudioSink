@@ -36,7 +36,7 @@ namespace SinkLite.UI
         private const int AreaOutput = 5;
         private const int AreaDeviceBase = 100;
         private const int AreaDropdownBase = 200;
-        private const int AreaBack = 300;
+        private const int AreaDropdownLimit = 300;
         private const int AreaAutoStart = 301;
         private const int AreaAutoConnect = 302;
         private const int AreaOpenLogs = 303;
@@ -456,7 +456,6 @@ namespace SinkLite.UI
             public Win32.RECT RefreshRect;
             public Win32.RECT SettingsRect;
             public Win32.RECT OutputRect;
-            public Win32.RECT BackRect;
             public Win32.RECT LogsButtonRect;
             public Win32.RECT ModeBluetoothRect;
             public Win32.RECT ModeWifiRect;
@@ -490,7 +489,6 @@ namespace SinkLite.UI
             x = m.ConnectRect.Right + m.ButtonGap;
             m.DisconnectRect = Rect(x, m.ButtonTop, x + m.ButtonWidth, m.ButtonTop + S(34));
             m.RefreshRect = Rect(m.Left, S(350), m.Left + S(118), S(382));
-            m.BackRect = Rect(m.Left, S(60), m.Left + S(62), S(90));
             m.LogsButtonRect = Rect(m.Left, S(412), m.Left + S(140), S(444));
             m.Buffer80Rect = Rect(m.Left + S(12), S(336), m.Left + S(98), S(368));
             m.Buffer120Rect = Rect(m.Left + S(106), S(336), m.Left + S(192), S(368));
@@ -507,12 +505,12 @@ namespace SinkLite.UI
             int right = m.Left + m.ContentWidth;
             switch (area)
             {
-                case AreaSettingsNetwork: return Rect(m.Left + S(268), S(60), m.Left + S(340), S(90));
+                case AreaSettingsNetwork: return Rect(m.Left + S(192), S(60), m.Left + S(264), S(90));
                 case AreaFirewallEnable: return Rect(m.Left, S(240), m.Left + (m.ContentWidth - S(8)) / 2, S(274));
                 case AreaFirewallDisable: return Rect(m.Left + (m.ContentWidth + S(8)) / 2, S(240), right, S(274));
                 case AreaFirewallCheck: return Rect(m.Left, S(288), m.Left + S(118), S(320));
-                case AreaSettingsGeneral: return Rect(m.Left + S(76), S(60), m.Left + S(148), S(90));
-                case AreaSettingsDevices: return Rect(m.Left + S(156), S(60), m.Left + S(260), S(90));
+                case AreaSettingsGeneral: return Rect(m.Left, S(60), m.Left + S(72), S(90));
+                case AreaSettingsDevices: return Rect(m.Left + S(80), S(60), m.Left + S(184), S(90));
                 case AreaDeviceBluetooth: return Rect(m.Left, S(104), m.Left + S(88), S(136));
                 case AreaDeviceWifi: return Rect(m.Left + S(96), S(104), m.Left + S(184), S(136));
                 case AreaPreviousPage: return Rect(right - S(150), S(350), right - S(80), S(382));
@@ -557,7 +555,6 @@ namespace SinkLite.UI
             }
             if (settingsMode)
             {
-                if (Contains(m.BackRect, x, y)) return AreaBack;
                 foreach (int tab in new[] { AreaSettingsGeneral, AreaSettingsDevices, AreaSettingsNetwork })
                     if (Contains(SettingsControlRect(m, tab), x, y)) return tab;
                 if (networkSettings)
@@ -675,7 +672,7 @@ namespace SinkLite.UI
 
         private void Activate(int area)
         {
-            if (area >= AreaDropdownBase && area < AreaBack)
+            if (area >= AreaDropdownBase && area < AreaDropdownLimit)
             {
                 int index = area - AreaDropdownBase;
                 if (index >= 0 && index < cachedOutputs.Count)
@@ -746,14 +743,9 @@ namespace SinkLite.UI
                     autoStartEnabled = AutoStart.IsEnabled();
                     if (networkSettings) BeginFirewallOperation(AreaFirewallCheck);
                     RefreshConnectionDevices();
-                    focusArea = keyboardFocus ? AreaBack : AreaSettings;
+                    focusArea = keyboardFocus ? (networkSettings ? AreaSettingsNetwork : deviceSettings ? AreaSettingsDevices : AreaSettingsGeneral) : AreaSettings;
                     dropdownOpen = false;
                     log.Info("Ui.SettingsOpened");
-                    return;
-
-                case AreaBack:
-                    settingsMode = false;
-                    focusArea = AreaSettings;
                     return;
 
                 case AreaAutoStart:
@@ -963,7 +955,7 @@ namespace SinkLite.UI
                 }
                 else if (settingsMode)
                 {
-                    areas.AddRange(new[] { AreaBack, AreaSettingsGeneral, AreaSettingsDevices, AreaSettingsNetwork });
+                    areas.AddRange(new[] { AreaSettingsGeneral, AreaSettingsDevices, AreaSettingsNetwork });
                     if (networkSettings) areas.AddRange(new[] { AreaFirewallEnable, AreaFirewallDisable, AreaFirewallCheck });
                     else if (deviceSettings)
                     {
@@ -1386,7 +1378,6 @@ namespace SinkLite.UI
         /// </summary>
         private void DrawSettings(IntPtr hdc, Metrics m)
         {
-            DrawButton(hdc, m.BackRect, "返回", AreaBack, false);
             DrawModeTab(hdc, SettingsControlRect(m, AreaSettingsGeneral), "常规", !deviceSettings && !networkSettings, AreaSettingsGeneral);
             DrawModeTab(hdc, SettingsControlRect(m, AreaSettingsDevices), "连接设备", deviceSettings, AreaSettingsDevices);
             DrawModeTab(hdc, SettingsControlRect(m, AreaSettingsNetwork), "网络", networkSettings, AreaSettingsNetwork);
@@ -1629,7 +1620,6 @@ namespace SinkLite.UI
                 case AreaModeBluetooth: r = m.ModeBluetoothRect; break;
                 case AreaModeWifi: r = m.ModeWifiRect; break;
                 case AreaSettings: r = m.SettingsRect; break;
-                case AreaBack: r = m.BackRect; break;
                 case AreaOutput: r = m.OutputRect; break;
                 case AreaConnect: r = m.ConnectRect; break;
                 case AreaDisconnect: r = m.DisconnectRect; break;
@@ -1644,7 +1634,7 @@ namespace SinkLite.UI
                 case AreaAutoStart: r = Rect(m.Left + S(8), S(174), m.Left + m.ContentWidth - S(8), S(222)); break;
                 case AreaAutoConnect: r = Rect(m.Left + S(8), S(250), m.Left + m.ContentWidth - S(8), S(298)); break;
                 default:
-                    if (focusArea >= AreaDropdownBase && focusArea < AreaBack && dropdownOpen)
+                    if (focusArea >= AreaDropdownBase && focusArea < AreaDropdownLimit && dropdownOpen)
                     { int top = dropdownRect.Top + S(4) + (focusArea - AreaDropdownBase) * S(DropdownRowHeight); r = Rect(dropdownRect.Left + S(4), top, dropdownRect.Right - S(4), top + S(DropdownRowHeight)); }
                     else if (focusArea >= AreaDeviceBase && focusArea < AreaDropdownBase)
                     { int top = m.DeviceListTop + (focusArea - AreaDeviceBase) * S(DeviceRowHeight); r = Rect(m.Left, top, m.Left + m.ContentWidth, top + S(DeviceRowHeight)); }

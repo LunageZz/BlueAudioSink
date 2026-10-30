@@ -1419,22 +1419,23 @@ namespace SinkLite.UI
             string state = firewallTask != null ? firewallChanging ? "等待 Windows 授权与配置…" : "正在检测…"
                 : !firewallStatus.Available ? "无法读取防火墙状态" : firewallStatus.RuleReady ? "已开启局域网放行"
                 : firewallStatus.RuleExists ? "放行规则需要修复" : "尚未添加本程序的放行规则";
-            Text(hdc, state, fontBody, firewallStatus.RuleReady ? Win32.Rgb(20, 120, 75) : Win32.Rgb(23, 40, 63), Rect(m.Left + S(12), S(146), right - S(12), S(172)));
-            Text(hdc, "仅放行本程序 · 专用网络 · 同一局域网", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(12), S(180), right - S(12), S(198)));
-            Text(hdc, "UDP " + WifiFirewall.Ports(wifi.Port) + "；移动软件后请重新开启。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(12), S(200), right - S(12), S(218)));
-            DrawButton(hdc, SettingsControlRect(m, AreaFirewallEnable), firewallStatus.RuleReady ? "重新配置" : "开启放行", AreaFirewallEnable, true);
+            Text(hdc, "Wi-Fi 正常收音时，无需开启。", fontBody, Win32.Rgb(23, 40, 63), Rect(m.Left + S(12), S(148), right - S(12), S(174)));
+            Text(hdc, "无法收音时，可尝试开启放行。", fontBody, Win32.Rgb(80, 94, 114), Rect(m.Left + S(12), S(180), right - S(12), S(206)));
+            DrawButton(hdc, SettingsControlRect(m, AreaFirewallEnable), firewallStatus.RuleReady ? "重新配置" : "尝试开启放行", AreaFirewallEnable, true);
             DrawButton(hdc, SettingsControlRect(m, AreaFirewallDisable), "移除本程序规则", AreaFirewallDisable, false);
             DrawButton(hdc, SettingsControlRect(m, AreaFirewallCheck), "重新检测", AreaFirewallCheck, false);
-            Text(hdc, "修改时需要管理员授权", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(132), S(288), right, S(320)));
-            string hint = firewallTask != null ? "正在处理，请稍候。" : !firewallStatus.Available ? firewallStatus.Error ?? "点击重新检测以读取状态。"
-                : firewallStatus.InboundBlocked || firewallStatus.ModifyState != 0 ? "系统策略限制入站连接，请联系管理员。"
-                : !firewallStatus.PrivateActive ? "未检测到专用网络，规则暂不生效。"
-                : !firewallStatus.PrivateFirewallEnabled ? "专用网络防火墙当前已关闭。" : "请确认手机与电脑所在网络设为专用网络。";
-            Text(hdc, hint, fontSmall, Win32.Rgb(151, 91, 22), Rect(m.Left, S(338), right, S(360)));
-            Text(hdc, "不关闭防火墙，也不修改公共网络或其他规则。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left, S(366), right, S(386)));
-            Text(hdc, "阻断规则、其他防火墙或网络隔离仍可能影响连接。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left, S(390), right, S(410)));
+            Text(hdc, state, fontBody, firewallStatus.RuleReady ? Win32.Rgb(20, 120, 75) : Win32.Rgb(80, 94, 114), Rect(m.Left, S(338), right, S(362)));
+            string hint = null;
+            if (firewallTask == null && !firewallStatus.Available) hint = firewallStatus.Error;
+            else if (firewallTask == null && firewallStatus.RuleExists)
+            {
+                if (firewallStatus.InboundBlocked || firewallStatus.ModifyState != 0) hint = "系统策略限制入站连接，请联系管理员。";
+                else if (!firewallStatus.PrivateActive) hint = "此规则仅在专用网络中生效。";
+            }
+            if (!string.IsNullOrEmpty(hint))
+                Text(hdc, hint, fontSmall, Win32.Rgb(151, 91, 22), Rect(m.Left, S(368), right, S(390)));
             if (!string.IsNullOrEmpty(firewallMessage))
-                Text(hdc, firewallMessage, fontSmall, Win32.Rgb(0, 93, 165), Rect(m.Left, S(420), right, S(444)));
+                Text(hdc, firewallMessage, fontBody, Win32.Rgb(0, 93, 165), Rect(m.Left, S(404), right, S(432)));
         }
 
         private void DrawPreference(IntPtr hdc, Metrics m, int top, int area, string label, string hint, bool value)

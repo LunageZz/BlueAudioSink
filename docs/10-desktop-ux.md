@@ -78,3 +78,8 @@ Release 构建通过，仅既有 NAudio/COM 裁剪警告；原有 19 项音频/�
 已核对正在运行的 exe 路径及 PE 主图标资源（唯一图标组 32512，9 帧全为新图），旧绿点来自 Shell 仍缓存同路径旧图标。启动时声明稳定的 BlueAudioSink.Desktop AppUserModelID，并在当前安装位置的内嵌图标版本变更时通知 Shell 更新文件及图标缓存；不删除缓存文件、不重启 Explorer。窗口显式设置大小图标，避免只依赖类图标。验证实际窗口、任务栏/任务管理器可见状态，区分文件资源正确与 Shell 展示刷新。
 
 核验：Release 构建通过。正在运行的开发目录 exe 与正式发布 exe 均只有新蓝色图标资源；加入通知后，已打开的任务管理器对开发路径仍保留绿点。关闭本程序并从正式发布入口 `artifacts/BlueAudioSink-0.1.0.exe` 启动，实际核验任务管理器条目已显示蓝色音频图标，确认路径缓存参与了问题。当前保留正式发布入口运行。未删除图标缓存文件、未重启 Explorer，未强制结束任务管理器。窗口与 Shell 图标刷新机制已补齐；未取得独立任务栏截图，不将标题栏/任务管理器核验写成任务栏视觉验收。
+
+## 双端作者署名（实施规格）
+电脑所有页面底部以现有小字号显示“开发作者：liubaiqing”；临时操作反馈优先，反馈结束后恢复署名。手机在底部统计栏下显示同样署名，使用 bodySmall 和次要文字颜色，不增加操作入口。Android 使用独立发布密钥签名 Release，密钥和密码仅在本地保存，源码提供无密码示例；APK 版本统一为 0.1.0，versionCode 递增为 2。
+
+核验：Windows Release 发布成功，仅保留已有 NAudio/COM 裁剪警告；实际启动正式入口，Wi-Fi 页面底部署名清晰可见，手机音频恢复接收。Android assembleRelease（含 lintVital）成功，apksigner 验证 v2 签名通过，证书主体为 BlueAudioSink / liubaiqing；aapt 确认 versionCode=2、versionName=0.1.0，无 application-debuggable 标记，APK 含作者文字资源。本轮未在实体手机卸载旧测试版或安装新签名版，手机署名未作实体屏幕视觉验收。英文 README 作为默认首页，保留中文版，文档本地链接均有效。密钥、密码、Kotlin 缓存已排除在 Git 外。原测试签名安装需卸载后安装正式签名版。

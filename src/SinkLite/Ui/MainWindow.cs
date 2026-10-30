@@ -1141,6 +1141,8 @@ namespace SinkLite.UI
                 DrawKeyboardFocus(hdcMem, m);
                 if (DateTime.Now < noticeUntil)
                     Text(hdcMem, notice, fontBody, Win32.Rgb(0, 93, 165), Rect(m.Left, m.Height - S(24), m.Left + m.ContentWidth, m.Height - S(4)));
+                else
+                    Text(hdcMem, "开发作者：liubaiqing", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left, m.Height - S(24), m.Left + m.ContentWidth, m.Height - S(4)));
                 Win32.BitBlt(hdcScreen, 0, 0, width, height, hdcMem, 0, 0, Win32.SRCCOPY);
             }
             finally

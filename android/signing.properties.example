@@ -1,0 +1,6 @@
+# Copy to signing.properties (ignored by Git), then fill in your own credentials.
+# Use forward slashes in the keystore path, including on Windows.
+storeFile=C:/path/to/blueaudiosink-release.p12
+storePassword=YOUR_STORE_PASSWORD
+keyAlias=blueaudiosink
+keyPassword=YOUR_KEY_PASSWORD

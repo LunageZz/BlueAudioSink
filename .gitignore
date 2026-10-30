@@ -35,15 +35,19 @@ desktop.ini
 
 # ===== Android 端 =====
 android/.gradle/
+android/.kotlin/
 android/build/
 android/app/build/
 android/local.properties
+android/signing.properties
 android/.idea/
 android/captures/
 *.apk
 *.aab
 *.keystore
 *.jks
+*.p12
+*.pfx
 
 # ===== 验证工具（不入库）=====
 tools/scrcpy/

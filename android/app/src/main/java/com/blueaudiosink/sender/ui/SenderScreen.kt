@@ -456,14 +456,22 @@ private fun PrimaryButton(state: SenderUiState, onStart: () -> Unit, onStop: () 
 private fun StatsBar(state: SenderUiState) {
     val lossText = String.format(Locale.US, "%.1f%%", state.lossPermille / 10.0)
     Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 8.dp) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-        ) {
-            StatItem(stringResource(R.string.stats_loss), lossText)
-            StatItem(stringResource(R.string.stats_packets), state.packetsSent.toString())
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                StatItem(stringResource(R.string.stats_loss), lossText)
+                StatItem(stringResource(R.string.stats_packets), state.packetsSent.toString())
+            }
+            Text(
+                text = stringResource(R.string.developer_credit),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 12.dp),
+            )
         }
     }
 }

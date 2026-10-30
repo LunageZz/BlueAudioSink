@@ -23,8 +23,8 @@ namespace SinkLite.UI
         private const int MaxDeviceRows = 5;
         private const int MaxDropdownRows = 6;
 
-        private const int PadX = 24;
-        private const int DeviceRowHeight = 40;
+        private const int PadX = 16;
+        private const int DeviceRowHeight = 34;
         private const int DropdownRowHeight = 32;
         private const int ButtonHeight = 36;
 
@@ -157,7 +157,7 @@ namespace SinkLite.UI
                 "BlueAudioSinkMainWindow",
                 "BlueAudioSink",
                 Win32.WS_CAPTION | Win32.WS_SYSMENU | Win32.WS_MINIMIZEBOX | Win32.WS_MAXIMIZEBOX | 0x00040000,
-                S(120), S(80), S(700), S(680),
+                S(120), S(80), S(520), S(500),
                 IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
 
             if (hwnd == IntPtr.Zero)
@@ -235,9 +235,9 @@ namespace SinkLite.UI
             brushSwitchOff = Win32.CreateSolidBrush(Win32.Rgb(196, 196, 196));
             brushSwitchOffHover = Win32.CreateSolidBrush(Win32.Rgb(168, 168, 168));
 
-            fontValue = Win32.CreateFontW(-S(28), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
-            fontHeading = Win32.CreateFontW(-S(16), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
-            fontTitle = Win32.CreateFontW(-S(23), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
+            fontValue = Win32.CreateFontW(-S(24), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
+            fontHeading = Win32.CreateFontW(-S(14), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
+            fontTitle = Win32.CreateFontW(-S(20), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
             fontBody = Win32.CreateFontW(-S(14), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
             fontSmall = Win32.CreateFontW(-S(12), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
             fontCaption = Win32.CreateFontW(-S(13), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
@@ -251,9 +251,9 @@ namespace SinkLite.UI
             Win32.DeleteObject(fontBody);
             Win32.DeleteObject(fontSmall);
             Win32.DeleteObject(fontCaption);
-            fontValue = Win32.CreateFontW(-S(28), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
-            fontHeading = Win32.CreateFontW(-S(16), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
-            fontTitle = Win32.CreateFontW(-S(23), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
+            fontValue = Win32.CreateFontW(-S(24), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
+            fontHeading = Win32.CreateFontW(-S(14), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
+            fontTitle = Win32.CreateFontW(-S(20), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
             fontBody = Win32.CreateFontW(-S(14), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
             fontSmall = Win32.CreateFontW(-S(12), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
             fontCaption = Win32.CreateFontW(-S(13), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Microsoft YaHei UI");
@@ -396,44 +396,43 @@ namespace SinkLite.UI
         {
             Win32.RECT client;
             Win32.GetClientRect(hwnd, out client);
-            int width = client.Right - client.Left;
-            int height = client.Bottom - client.Top;
+            int width = client.Right - client.Left, height = client.Bottom - client.Top;
             Metrics m = new Metrics();
             m.Width = width; m.Height = height;
-            m.ContentWidth = Math.Max(S(300), Math.Min(width - S(PadX) * 2, S(820)));
+            m.ContentWidth = Math.Max(S(300), Math.Min(width - S(PadX) * 2, S(680)));
             m.Left = (width - m.ContentWidth) / 2;
             int right = m.Left + m.ContentWidth;
-            m.SettingsRect = Rect(right - S(66), S(18), right, S(54));
-            m.ModeWifiRect = Rect(m.SettingsRect.Left - S(14 + 70), S(18), m.SettingsRect.Left - S(14), S(54));
-            m.ModeBluetoothRect = Rect(m.ModeWifiRect.Left - S(74), S(18), m.ModeWifiRect.Left - S(4), S(54));
-            m.SourceLabelTop = S(218);
-            m.DeviceListTop = S(246);
-            int fit = Math.Max(1, (height - m.DeviceListTop - S(168)) / S(DeviceRowHeight));
+            m.SettingsRect = Rect(right - S(56), S(10), right, S(42));
+            m.ModeWifiRect = Rect(m.SettingsRect.Left - S(70), S(10), m.SettingsRect.Left - S(10), S(42));
+            m.ModeBluetoothRect = Rect(m.ModeWifiRect.Left - S(62), S(10), m.ModeWifiRect.Left - S(6), S(42));
+            m.SourceLabelTop = S(156);
+            m.DeviceListTop = S(184);
+            int fit = Math.Max(1, (height - m.DeviceListTop - S(130)) / S(DeviceRowHeight));
             m.VisibleRows = Math.Min(Math.Min(MaxDeviceRows, Math.Max(1, controller.Devices.Count)), fit);
-            m.OutputLabelTop = m.DeviceListTop + m.VisibleRows * S(DeviceRowHeight) + S(22);
-            m.OutputBoxTop = m.OutputLabelTop + S(26);
-            m.OutputBoxBottom = m.OutputBoxTop + S(40);
+            m.OutputLabelTop = m.DeviceListTop + m.VisibleRows * S(DeviceRowHeight) + S(12);
+            m.OutputBoxTop = m.OutputLabelTop + S(24);
+            m.OutputBoxBottom = m.OutputBoxTop + S(34);
             m.OutputRect = Rect(m.Left, m.OutputBoxTop, right, m.OutputBoxBottom);
-            m.ButtonTop = m.OutputBoxBottom + S(18);
-            m.ButtonGap = S(12);
+            m.ButtonTop = m.OutputBoxBottom + S(12);
+            m.ButtonGap = S(8);
             m.ButtonWidth = (m.ContentWidth - m.ButtonGap * 2) / 3;
             int x = m.Left;
-            m.ConnectRect = Rect(x, m.ButtonTop, x + m.ButtonWidth, m.ButtonTop + S(38));
+            m.ConnectRect = Rect(x, m.ButtonTop, x + m.ButtonWidth, m.ButtonTop + S(34));
             x = m.ConnectRect.Right + m.ButtonGap;
-            m.DisconnectRect = Rect(x, m.ButtonTop, x + m.ButtonWidth, m.ButtonTop + S(38));
+            m.DisconnectRect = Rect(x, m.ButtonTop, x + m.ButtonWidth, m.ButtonTop + S(34));
             x = m.DisconnectRect.Right + m.ButtonGap;
-            m.RefreshRect = Rect(x, m.ButtonTop, right, m.ButtonTop + S(38));
-            m.BackRect = Rect(m.Left, S(84), m.Left + S(74), S(118));
-            m.LogsButtonRect = Rect(m.Left, S(514), m.Left + S(150), S(552));
-            m.Buffer80Rect = Rect(m.Left + S(16), S(426), m.Left + S(116), S(462));
-            m.Buffer120Rect = Rect(m.Left + S(128), S(426), m.Left + S(228), S(462));
-            m.Buffer160Rect = Rect(m.Left + S(240), S(426), m.Left + S(340), S(462));
-            m.DetailsRect = Rect(right - S(100), S(450), right, S(484));
-            m.CopyAddressRect = Rect(m.Left + S(220), S(450), m.Left + S(280), S(484));
+            m.RefreshRect = Rect(x, m.ButtonTop, right, m.ButtonTop + S(34));
+            m.BackRect = Rect(m.Left, S(60), m.Left + S(62), S(90));
+            m.LogsButtonRect = Rect(m.Left, S(412), m.Left + S(140), S(444));
+            m.Buffer80Rect = Rect(m.Left + S(12), S(336), m.Left + S(98), S(368));
+            m.Buffer120Rect = Rect(m.Left + S(106), S(336), m.Left + S(192), S(368));
+            m.Buffer160Rect = Rect(m.Left + S(200), S(336), m.Left + S(286), S(368));
+            m.DetailsRect = Rect(right - S(84), S(328), right, S(358));
+            m.CopyAddressRect = Rect(m.Left + S(174), S(328), m.Left + S(222), S(358));
             if (settingsMode)
             {
-                m.OutputLabelTop = S(142);
-                m.OutputRect = Rect(m.Left + S(16), S(170), right - S(16), S(210));
+                m.OutputLabelTop = S(112);
+                m.OutputRect = Rect(m.Left + S(12), S(134), right - S(12), S(168));
             }
             return m;
         }
@@ -478,8 +477,8 @@ namespace SinkLite.UI
                 if (Contains(m.BackRect, x, y)) return AreaBack;
                 if (Contains(m.OutputRect, x, y)) return IsEnabled(AreaOutput) ? AreaOutput : AreaNone;
                 if (Contains(m.LogsButtonRect, x, y)) return AreaOpenLogs;
-                if (Contains(Rect(m.Left + S(8), S(224), m.Left + m.ContentWidth - S(8), S(282)), x, y)) return AreaAutoStart;
-                if (Contains(Rect(m.Left + S(8), S(318), m.Left + m.ContentWidth - S(8), S(378)), x, y)) return AreaAutoConnect;
+                if (Contains(Rect(m.Left + S(8), S(174), m.Left + m.ContentWidth - S(8), S(222)), x, y)) return AreaAutoStart;
+                if (Contains(Rect(m.Left + S(8), S(250), m.Left + m.ContentWidth - S(8), S(298)), x, y)) return AreaAutoConnect;
                 if (Contains(m.Buffer80Rect, x, y)) return AreaBuffer80;
                 if (Contains(m.Buffer120Rect, x, y)) return AreaBuffer120;
                 if (Contains(m.Buffer160Rect, x, y)) return AreaBuffer160;
@@ -873,7 +872,7 @@ namespace SinkLite.UI
                     break;
                 case 0x0024: // WM_GETMINMAXINFO: native minimum track size, in current DPI.
                     Win32.MINMAXINFO limits = System.Runtime.InteropServices.Marshal.PtrToStructure<Win32.MINMAXINFO>(lParam);
-                    limits.ptMinTrackSize.X = S(600); limits.ptMinTrackSize.Y = S(640);
+                    limits.ptMinTrackSize.X = S(480); limits.ptMinTrackSize.Y = S(500);
                     System.Runtime.InteropServices.Marshal.StructureToPtr(limits, lParam, false);
                     return IntPtr.Zero;
                 case Win32.WM_PAINT:
@@ -988,7 +987,7 @@ namespace SinkLite.UI
                 if (settingsMode && dropdownOpen) DrawDropdown(hdcMem);
                 DrawKeyboardFocus(hdcMem, m);
                 if (DateTime.Now < noticeUntil)
-                    Text(hdcMem, notice, fontBody, Win32.Rgb(0, 93, 165), Rect(m.Left, m.Height - S(34), m.Left + m.ContentWidth, m.Height - S(10)));
+                    Text(hdcMem, notice, fontBody, Win32.Rgb(0, 93, 165), Rect(m.Left, m.Height - S(24), m.Left + m.ContentWidth, m.Height - S(4)));
                 Win32.BitBlt(hdcScreen, 0, 0, width, height, hdcMem, 0, 0, Win32.SRCCOPY);
             }
             finally
@@ -1038,19 +1037,15 @@ namespace SinkLite.UI
         {
             if (modeSwitching) { view.Title = "正在切换模式"; view.Description = "正在准备连接，请稍候。"; view.Tone = ConnectionTone.Ready; }
             int right = m.Left + m.ContentWidth;
-            Win32.RECT card = Rect(m.Left, S(80), right, S(194));
-            RoundFill(hdc, card, S(12), brushCard);
-            RoundBorder(hdc, card, S(12), brushBorder);
-            int color = ToneColor(view.Tone);
-            Dot(hdc, m.Left + S(18), S(105), S(10), color);
+            Dot(hdc, m.Left + S(4), S(78), S(8), ToneColor(view.Tone));
             bool retry = wifiMode && !settingsMode && wifi.Current.State == SinkState.Faulted;
-            Text(hdc, view.Title, fontTitle, Win32.Rgb(23, 40, 63), Rect(m.Left + S(38), S(94), right - S(retry ? 110 : 16), S(126)));
+            Text(hdc, view.Title, fontTitle, Win32.Rgb(23, 40, 63), Rect(m.Left + S(20), S(66), right - S(retry ? 88 : 4), S(94)));
             if (retry) DrawButton(hdc, RetryRect(m), "重试", AreaRetryWifi, false);
-            Text(hdc, view.Description, fontBody, Win32.Rgb(80, 94, 114), Rect(m.Left + S(18), S(134), right - S(18), S(156)));
-            int col = (m.ContentWidth - S(36)) / 3;
-            Stage(hdc, m.Left + S(18), S(169), col, view.PhoneReady, "手机已连接", "等待手机");
-            Stage(hdc, m.Left + S(18) + col, S(169), col, view.StreamReady, "音频已接收", "等待音频");
-            Stage(hdc, m.Left + S(18) + col * 2, S(169), col, view.OutputReady, "输出已就绪", "等待播放");
+            Text(hdc, view.Description, fontBody, Win32.Rgb(80, 94, 114), Rect(m.Left + S(4), S(98), right - S(4), S(120)));
+            int col = (m.ContentWidth - S(8)) / 3;
+            Stage(hdc, m.Left + S(4), S(124), col, view.PhoneReady, "手机已连接", "等待手机");
+            Stage(hdc, m.Left + S(4) + col, S(124), col, view.StreamReady, "音频已接收", "等待音频");
+            Stage(hdc, m.Left + S(4) + col * 2, S(124), col, view.OutputReady, "输出已就绪", "等待播放");
         }
 
         private void Stage(IntPtr hdc, int left, int top, int width, bool ready, string active, string waiting)
@@ -1062,11 +1057,11 @@ namespace SinkLite.UI
 
         private void DrawModeTabs(IntPtr hdc, Metrics m)
         {
-            Text(hdc, "BlueAudioSink", fontHeading, Win32.Rgb(26, 45, 70), Rect(m.Left, S(18), m.ModeBluetoothRect.Left - S(12), S(54)));
+            Text(hdc, "BlueAudioSink", fontHeading, Win32.Rgb(26, 45, 70), Rect(m.Left, S(10), m.ModeBluetoothRect.Left - S(10), S(42)));
             DrawModeTab(hdc, m.ModeBluetoothRect, "蓝牙", !settingsMode && !wifiMode, AreaModeBluetooth);
             DrawModeTab(hdc, m.ModeWifiRect, "Wi-Fi", !settingsMode && wifiMode, AreaModeWifi);
             DrawModeTab(hdc, m.SettingsRect, "设置", settingsMode, AreaSettings);
-            Win32.RECT line = Rect(m.Left, S(68), m.Left + m.ContentWidth, S(69));
+            Win32.RECT line = Rect(m.Left, S(52), m.Left + m.ContentWidth, S(53));
             Win32.FillRect(hdc, ref line, brushBorder);
         }
 
@@ -1083,48 +1078,51 @@ namespace SinkLite.UI
 
         private void DrawWifiPage(IntPtr hdc, Metrics m, WifiSnapshot snapshot)
         {
-            int left = m.Left, right = left + m.ContentWidth;
-            Win32.RECT devices = Rect(left, S(210), right, S(326));
-            RoundFill(hdc, devices, S(12), brushCard);
-            RoundBorder(hdc, devices, S(12), brushBorder);
-            int half = m.ContentWidth / 2;
-            Text(hdc, "发送手机", fontCaption, Win32.Rgb(88, 102, 122), Rect(left + S(18), S(225), left + half - S(12), S(245)));
+            int left = m.Left, right = left + m.ContentWidth, half = m.ContentWidth / 2;
+            Win32.RECT devices = Rect(left, S(154), right, S(230));
+            RoundFill(hdc, devices, S(8), brushCard); RoundBorder(hdc, devices, S(8), brushBorder);
+            Text(hdc, "发送手机", fontSmall, Win32.Rgb(88, 102, 122), Rect(left + S(12), S(162), left + half - S(8), S(180)));
             string phone = string.IsNullOrEmpty(snapshot.DeviceName) ? (string.IsNullOrEmpty(snapshot.Remote) ? "尚未连接" : "Android 手机") : snapshot.DeviceName;
-            Text(hdc, phone, fontHeading, Win32.Rgb(23, 40, 63), Rect(left + S(18), S(252), left + half - S(12), S(279)));
+            Text(hdc, phone, fontHeading, Win32.Rgb(23, 40, 63), Rect(left + S(12), S(184), left + half - S(8), S(208)));
             string address = snapshot.Remote;
             int colon = string.IsNullOrEmpty(address) ? -1 : address.LastIndexOf(':');
             if (colon > 0) address = address.Substring(0, colon);
-            Text(hdc, address ?? "等待手机发送端", fontBody, Win32.Rgb(88, 102, 122), Rect(left + S(18), S(286), left + half - S(12), S(310)));
-            Text(hdc, "播放到", fontCaption, Win32.Rgb(88, 102, 122), Rect(left + half + S(10), S(225), right - S(18), S(245)));
+            Text(hdc, address ?? "等待手机发送端", fontSmall, Win32.Rgb(88, 102, 122), Rect(left + S(12), S(208), left + half - S(8), S(226)));
+            Text(hdc, "播放到", fontSmall, Win32.Rgb(88, 102, 122), Rect(left + half + S(8), S(162), right - S(12), S(180)));
             string destination = snapshot.OutputName ?? cachedPreferredName;
-            Win32.RECT destinationRect = Rect(left + half + S(10), S(252), right - S(18), S(310));
+            Win32.RECT destinationRect = Rect(left + half + S(8), S(184), right - S(12), S(226));
             Win32.SelectObject(hdc, fontBody); Win32.SetTextColor(hdc, Win32.Rgb(23, 40, 63));
             Win32.DrawText(hdc, destination, -1, ref destinationRect, Win32.DT_LEFT | Win32.DT_WORDBREAK | Win32.DT_END_ELLIPSIS);
-            int gap = S(12), tileWidth = (m.ContentWidth - gap * 2) / 3;
-            MetricTile(hdc, Rect(left, S(342), left + tileWidth, S(436)), "网络延迟", FormatMs(snapshot.RttMs), "往返时间", false);
-            MetricTile(hdc, Rect(left + tileWidth + gap, S(342), left + tileWidth * 2 + gap, S(436)), "音频缓冲", snapshot.BufferMs + " ms", "预缓冲 " + snapshot.TargetMs + " ms", false);
-            MetricTile(hdc, Rect(left + (tileWidth + gap) * 2, S(342), right, S(436)), "丢包率", FormatPercent(snapshot.LossPercent), "最近 10 秒", snapshot.LossPercent > 0.5);
-            Text(hdc, "电脑地址  " + (snapshot.LocalAddress ?? "—"), fontSmall, Win32.Rgb(80, 94, 114), Rect(left, S(450), m.CopyAddressRect.Left - S(6), S(484)));
+            Win32.RECT stats = Rect(left, S(242), right, S(316));
+            RoundFill(hdc, stats, S(8), brushCard); RoundBorder(hdc, stats, S(8), brushBorder);
+            int col = m.ContentWidth / 3;
+            MetricTile(hdc, Rect(left, S(242), left + col, S(316)), "网络延迟", FormatMs(snapshot.RttMs), "往返时间", false);
+            MetricTile(hdc, Rect(left + col, S(242), left + col * 2, S(316)), "音频缓冲", snapshot.BufferMs + " ms", "预缓冲 " + snapshot.TargetMs + " ms", false);
+            MetricTile(hdc, Rect(left + col * 2, S(242), right, S(316)), "丢包率", FormatPercent(snapshot.LossPercent), "最近 10 秒", snapshot.LossPercent > 0.5);
+            for (int i = 1; i < 3; i++)
+            {
+                Win32.RECT divider = Rect(left + col * i, S(254), left + col * i + 1, S(304));
+                Win32.FillRect(hdc, ref divider, brushBorder);
+            }
+            Text(hdc, "电脑地址  " + (snapshot.LocalAddress ?? "—"), fontSmall, Win32.Rgb(80, 94, 114), Rect(left, S(328), m.CopyAddressRect.Left - S(6), S(358)));
             DrawButton(hdc, m.CopyAddressRect, "复制", AreaCopyAddress, false);
             DrawButton(hdc, m.DetailsRect, wifiDetails ? "收起详情" : "连接详情", AreaDetails, false);
             if (wifiDetails)
             {
-                Win32.RECT panel = Rect(left, S(500), right, Math.Min(m.Height - S(42), S(594)));
-                RoundFill(hdc, panel, S(10), brushCard); RoundBorder(hdc, panel, S(10), brushBorder);
-                Text(hdc, "连接详情", fontCaption, Win32.Rgb(52, 70, 92), Rect(left + S(16), panel.Top + S(8), right - S(16), panel.Top + S(28)));
-                Text(hdc, "手机端点 " + (snapshot.Remote ?? "未连接") + "   ·   接收端口 " + snapshot.Port,
-                    fontSmall, Win32.Rgb(80, 94, 114), Rect(left + S(16), panel.Top + S(30), right - S(16), panel.Top + S(48)));
-                Text(hdc, "收到 " + snapshot.Received + " 包  ·  缺失 " + snapshot.Missing + " 包  ·  迟到 " + snapshot.Late + " 包  ·  播放欠载 " + snapshot.Underruns + " 次",
-                    fontSmall, Win32.Rgb(80, 94, 114), Rect(left + S(16), panel.Top + S(50), right - S(16), panel.Top + S(68)));
+                Win32.RECT panel = Rect(left, S(370), right, Math.Min(m.Height - S(36), S(430)));
+                RoundFill(hdc, panel, S(8), brushCard); RoundBorder(hdc, panel, S(8), brushBorder);
+                Text(hdc, "手机端点 " + (snapshot.Remote ?? "未连接") + "  ·  端口 " + snapshot.Port,
+                    fontSmall, Win32.Rgb(80, 94, 114), Rect(left + S(12), panel.Top + S(9), right - S(12), panel.Top + S(27)));
+                Text(hdc, "收到 " + snapshot.Received + "  ·  缺失 " + snapshot.Missing + "  ·  迟到 " + snapshot.Late + "  ·  欠载 " + snapshot.Underruns + " 次",
+                    fontSmall, Win32.Rgb(80, 94, 114), Rect(left + S(12), panel.Top + S(31), right - S(12), panel.Top + S(49)));
             }
         }
 
         private void MetricTile(IntPtr hdc, Win32.RECT rect, string label, string value, string hint, bool warning)
         {
-            RoundFill(hdc, rect, S(10), brushCard); RoundBorder(hdc, rect, S(10), brushBorder);
-            Text(hdc, label, fontCaption, Win32.Rgb(88, 102, 122), Rect(rect.Left + S(16), rect.Top + S(10), rect.Right - S(12), rect.Top + S(30)));
-            Text(hdc, value, fontValue, warning ? Win32.Rgb(170, 85, 0) : Win32.Rgb(23, 40, 63), Rect(rect.Left + S(16), rect.Top + S(32), rect.Right - S(12), rect.Top + S(68)));
-            Text(hdc, hint, fontSmall, Win32.Rgb(88, 102, 122), Rect(rect.Left + S(16), rect.Top + S(70), rect.Right - S(12), rect.Bottom - S(6)));
+            Text(hdc, label, fontSmall, Win32.Rgb(88, 102, 122), Rect(rect.Left + S(12), rect.Top + S(6), rect.Right - S(8), rect.Top + S(24)));
+            Text(hdc, value, fontValue, warning ? Win32.Rgb(170, 85, 0) : Win32.Rgb(23, 40, 63), Rect(rect.Left + S(12), rect.Top + S(24), rect.Right - S(8), rect.Top + S(56)));
+            Text(hdc, hint, fontSmall, Win32.Rgb(88, 102, 122), Rect(rect.Left + S(12), rect.Top + S(56), rect.Right - S(8), rect.Bottom - S(2)));
         }
 
         private static string FormatMs(double value)
@@ -1256,32 +1254,32 @@ namespace SinkLite.UI
         private void DrawSettings(IntPtr hdc, Metrics m)
         {
             DrawButton(hdc, m.BackRect, "返回", AreaBack, false);
-            Text(hdc, "设置", fontTitle, Win32.Rgb(23, 40, 63), Rect(m.Left + S(90), S(82), m.Left + m.ContentWidth, S(120)));
-            Win32.RECT general = Rect(m.Left, S(132), m.Left + m.ContentWidth, S(294));
-            RoundFill(hdc, general, S(12), brushCard); RoundBorder(hdc, general, S(12), brushBorder);
-            Metrics outputLayout = m; outputLayout.Left += S(16); outputLayout.ContentWidth -= S(32);
+            Text(hdc, "设置", fontTitle, Win32.Rgb(23, 40, 63), Rect(m.Left + S(76), S(58), m.Left + m.ContentWidth, S(94)));
+            Win32.RECT general = Rect(m.Left, S(104), m.Left + m.ContentWidth, S(232));
+            RoundFill(hdc, general, S(8), brushCard); RoundBorder(hdc, general, S(8), brushBorder);
+            Metrics outputLayout = m; outputLayout.Left += S(12); outputLayout.ContentWidth -= S(24);
             DrawOutputSection(hdc, outputLayout);
-            DrawPreference(hdc, m, S(224), AreaAutoStart, "开机启动", "登录 Windows 后自动打开", autoStartEnabled);
-            Win32.RECT connection = Rect(m.Left, S(310), m.Left + m.ContentWidth, S(498));
-            RoundFill(hdc, connection, S(12), brushCard); RoundBorder(hdc, connection, S(12), brushBorder);
-            DrawPreference(hdc, m, S(318), AreaAutoConnect, "蓝牙自动连接", "仅蓝牙模式生效", pageSettings.AutoConnect);
-            Text(hdc, "Wi-Fi 预缓冲", fontBody, Win32.Rgb(23, 40, 63), Rect(m.Left + S(16), S(387), m.Left + S(180), S(412)));
-            Text(hdc, "用于开始播放与断流恢复", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(182), S(387), m.Left + m.ContentWidth - S(16), S(412)));
+            DrawPreference(hdc, m, S(174), AreaAutoStart, "开机启动", "登录 Windows 后自动打开", autoStartEnabled);
+            Win32.RECT connection = Rect(m.Left, S(244), m.Left + m.ContentWidth, S(400));
+            RoundFill(hdc, connection, S(8), brushCard); RoundBorder(hdc, connection, S(8), brushBorder);
+            DrawPreference(hdc, m, S(250), AreaAutoConnect, "蓝牙自动连接", "仅蓝牙模式生效", pageSettings.AutoConnect);
+            Text(hdc, "Wi-Fi 预缓冲", fontBody, Win32.Rgb(23, 40, 63), Rect(m.Left + S(12), S(306), m.Left + S(154), S(328)));
+            Text(hdc, "用于开始播放与断流恢复", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(162), S(306), m.Left + m.ContentWidth - S(12), S(328)));
             DrawModeTab(hdc, m.Buffer80Rect, "80 ms", pageSettings.BufferBaseMs == 80, AreaBuffer80);
             DrawModeTab(hdc, m.Buffer120Rect, "120 ms", pageSettings.BufferBaseMs == 120, AreaBuffer120);
             DrawModeTab(hdc, m.Buffer160Rect, "160 ms", pageSettings.BufferBaseMs == 160, AreaBuffer160);
-            Text(hdc, "更高的预缓冲更抗抖动，开始播放会稍晚。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(16), S(470), m.Left + m.ContentWidth - S(16), S(490)));
+            Text(hdc, "缓冲越高越抗抖动，开始播放会稍晚。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(12), S(376), m.Left + m.ContentWidth - S(12), S(394)));
             DrawButton(hdc, m.LogsButtonRect, "打开日志目录", AreaOpenLogs, false);
-            Text(hdc, "BlueAudioSink 0.1.0", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(170), S(514), m.Left + m.ContentWidth, S(552)));
+            Text(hdc, "BlueAudioSink 0.1.0", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(154), S(412), m.Left + m.ContentWidth, S(444)));
         }
 
         private void DrawPreference(IntPtr hdc, Metrics m, int top, int area, string label, string hint, bool value)
         {
-            Win32.RECT row = Rect(m.Left + S(8), top, m.Left + m.ContentWidth - S(8), top + S(58));
-            if (hoverArea == area || pressedArea == area) RoundFill(hdc, row, S(8), pressedArea == area ? brushBtnPress : brushBtnHover);
-            Text(hdc, label, fontBody, Win32.Rgb(23, 40, 63), Rect(row.Left + S(8), top + S(5), row.Right - S(78), top + S(30)));
-            Text(hdc, hint, fontSmall, Win32.Rgb(88, 102, 122), Rect(row.Left + S(8), top + S(31), row.Right - S(78), top + S(51)));
-            DrawSwitch(hdc, row.Right - S(12), top + S(29), value, hoverArea == area);
+            Win32.RECT row = Rect(m.Left + S(8), top, m.Left + m.ContentWidth - S(8), top + S(48));
+            if (hoverArea == area || pressedArea == area) RoundFill(hdc, row, S(6), pressedArea == area ? brushBtnPress : brushBtnHover);
+            Text(hdc, label, fontBody, Win32.Rgb(23, 40, 63), Rect(row.Left + S(4), top, row.Right - S(72), top + S(24)));
+            Text(hdc, hint, fontSmall, Win32.Rgb(88, 102, 122), Rect(row.Left + S(4), top + S(24), row.Right - S(72), top + S(44)));
+            DrawSwitch(hdc, row.Right - S(8), top + S(24), value, hoverArea == area);
         }
 
         /// <summary>经典划钮：关闭时滑块在左且槽为灰色，开启时滑块在右且槽为主色。</summary>
@@ -1445,7 +1443,7 @@ namespace SinkLite.UI
         }
 
         private Win32.RECT RetryRect(Metrics m)
-        { return Rect(m.Left + m.ContentWidth - S(94), S(96), m.Left + m.ContentWidth - S(16), S(130)); }
+        { return Rect(m.Left + m.ContentWidth - S(76), S(66), m.Left + m.ContentWidth - S(4), S(96)); }
 
         private void DrawKeyboardFocus(IntPtr hdc, Metrics m)
         {
@@ -1468,8 +1466,8 @@ namespace SinkLite.UI
                 case AreaBuffer80: r = m.Buffer80Rect; break;
                 case AreaBuffer120: r = m.Buffer120Rect; break;
                 case AreaBuffer160: r = m.Buffer160Rect; break;
-                case AreaAutoStart: r = Rect(m.Left + S(8), S(224), m.Left + m.ContentWidth - S(8), S(282)); break;
-                case AreaAutoConnect: r = Rect(m.Left + S(8), S(318), m.Left + m.ContentWidth - S(8), S(378)); break;
+                case AreaAutoStart: r = Rect(m.Left + S(8), S(174), m.Left + m.ContentWidth - S(8), S(222)); break;
+                case AreaAutoConnect: r = Rect(m.Left + S(8), S(250), m.Left + m.ContentWidth - S(8), S(298)); break;
                 default:
                     if (focusArea >= AreaDropdownBase && focusArea < AreaBack && dropdownOpen)
                     { int top = dropdownRect.Top + S(4) + (focusArea - AreaDropdownBase) * S(DropdownRowHeight); r = Rect(dropdownRect.Left + S(4), top, dropdownRect.Right - S(4), top + S(DropdownRowHeight)); }

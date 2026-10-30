@@ -1063,10 +1063,9 @@ namespace SinkLite.UI
         private void DrawModeTabs(IntPtr hdc, Metrics m)
         {
             Text(hdc, "BlueAudioSink", fontHeading, Win32.Rgb(26, 45, 70), Rect(m.Left, S(18), m.ModeBluetoothRect.Left - S(12), S(54)));
-            DrawModeTab(hdc, m.ModeBluetoothRect, "蓝牙", !wifiMode, AreaModeBluetooth);
-            DrawModeTab(hdc, m.ModeWifiRect, "Wi-Fi", wifiMode, AreaModeWifi);
-            DrawButton(hdc, m.SettingsRect, "设置", AreaSettings, false);
-            if (settingsMode) RoundBorder(hdc, m.SettingsRect, S(8), brushAccent);
+            DrawModeTab(hdc, m.ModeBluetoothRect, "蓝牙", !settingsMode && !wifiMode, AreaModeBluetooth);
+            DrawModeTab(hdc, m.ModeWifiRect, "Wi-Fi", !settingsMode && wifiMode, AreaModeWifi);
+            DrawModeTab(hdc, m.SettingsRect, "设置", settingsMode, AreaSettings);
             Win32.RECT line = Rect(m.Left, S(68), m.Left + m.ContentWidth, S(69));
             Win32.FillRect(hdc, ref line, brushBorder);
         }

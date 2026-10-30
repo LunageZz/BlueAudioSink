@@ -33,3 +33,7 @@
 - 当前保留 Win32/GDI 与原依赖，无新增 UI 框架或图片资源。自绘控件支持键盘操作，本轮未新增完整 UI Automation 节点。
 
 本地 Release 同步到 `artifacts/BlueAudioSink-0.1.0.exe`、`artifacts/pc/BlueAudioSink.exe` 及默认 publish 目录；Android 产物本轮不变。
+
+## 选中态修正
+
+顶部高亮表示当前可见页面：设置页打开时，仅设置使用蓝底白字；蓝牙和 Wi-Fi 保持普通按钮样式。返回时恢复当前音频模式页面的高亮。只修改导航绘制，不改变音频模式或连接生命周期。

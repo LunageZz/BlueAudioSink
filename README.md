@@ -1,54 +1,95 @@
-# BlueAudioSink
+<p align="center"><img src="docs/images/app-icon.svg" width="88" height="88" alt="BlueAudioSink icon" /></p>
+<h1 align="center">BlueAudioSink</h1>
+<p align="center">Your phone's audio. Your PC's speakers.<br/>A lightweight Windows receiver with Bluetooth and local-network Wi-Fi modes.</p>
+<p align="center"><a href="https://github.com/liubaiqing/BlueAudioSink/releases/tag/v0.1.0">Download v0.1.0</a> · English | <a href="README.zh-CN.md">简体中文</a> · <a href="LICENSE">MIT License</a></p>
 
-English | [简体中文](README.zh-CN.md)
+Developed by **liubaiqing**. The apps currently use a Chinese interface; the guides below show which controls to use. All screenshots are from real devices. Device names, local addresses, and phone status information are masked.
 
-Play your phone's audio through your Windows PC's headphones or speakers. BlueAudioSink provides a lightweight Windows receiver with **Bluetooth** and **local-network Wi-Fi** modes, plus a companion Android app for Wi-Fi streaming.
+## A look at both apps
 
-Developed by **liubaiqing**. The current app interfaces are in Chinese; this README explains the main controls in English.
+| Windows receiver | Android Wi-Fi sender |
+| :---: | :---: |
+| <img src="docs/images/windows-wifi.png" width="480" alt="Windows receiver: connected and currently silent" /> | <img src="docs/images/android-wifi.png" width="235" alt="Android sender: sending audio, with developer credit at the bottom" /> |
 
-## Download
+**Bluetooth** needs no Android sender. **Wi-Fi** uses the companion Android app. Both share the PC's playback and device settings.
 
-Get the Windows executable and Android APK from [Releases](https://github.com/liubaiqing/BlueAudioSink/releases).
+## Download and open
 
-| Platform | Download | Requirements |
+| Device | Download | Requirements |
 | --- | --- | --- |
-| Windows | `BlueAudioSink-0.1.0.exe` | Windows 10 version 2004 (build 19041) or later, x64 |
-| Android sender | `BlueAudioSink-Sender-0.1.0.apk` | Android 10 or later; needed for Wi-Fi mode only |
+| PC | [BlueAudioSink-0.1.0.exe](https://github.com/liubaiqing/BlueAudioSink/releases/download/v0.1.0/BlueAudioSink-0.1.0.exe) | Windows 10 2004+ / Windows 11, x64 |
+| Phone — Wi-Fi only | [BlueAudioSink-Sender-0.1.0.apk](https://github.com/liubaiqing/BlueAudioSink/releases/download/v0.1.0/BlueAudioSink-Sender-0.1.0.apk) | Android 10+ |
 
-The Windows app is a self-contained executable: no .NET installation is required. The Android APK is a Release build signed with a dedicated release key. `SHA256SUMS.txt` contains checksums for both downloads.
+Double-click the EXE; no .NET installation is needed. Open the APK on your phone and install it. Android may ask you to allow installation from the app used to open the download. The APK is a Release build signed with a dedicated key. [SHA-256 checksums](https://github.com/liubaiqing/BlueAudioSink/releases/download/v0.1.0/SHA256SUMS.txt) are available.
 
-**Upgrading from the earlier debug-signed Android APK:** uninstall that version before installing the release-signed APK. Uninstalling clears saved app data, including remembered computers. Future release builds will use the same release key so they can update in place.
+<details>
+<summary>Already installed the old debug-signed Android APK?</summary>
 
-## Wi-Fi setup
+Uninstall it before installing the release-signed APK. Uninstalling clears saved devices and app data. Future releases will keep the release key for in-place updates.
 
-1. Connect your phone and PC to the same local network. A 5 GHz Wi-Fi connection is preferable; the PC can also use Ethernet on the same router.
-2. Run BlueAudioSink on the PC and select **Wi-Fi**.
-3. Install and open the Android sender, select the discovered PC, and start sending. Grant the recording and screen/audio capture permissions requested by Android.
-4. Play audio on your phone. The PC displays connection, receiving, and playback status.
+</details>
 
-No USB connection, developer options, or wireless debugging is needed.
+## Wi-Fi: three steps to listen
 
-If audio works, leave the firewall helper off. If the PC cannot receive audio, open **Settings → Network** (`设置 → 网络`) and try **Allow through firewall** (`尝试开启放行`), then approve the Windows administrator prompt. This adds inbound UDP rules for the current executable, private networks, and local-subnet sources only. You can remove the app's rules from the same page. Moving the executable requires configuring the rules again. Public-network restrictions, router client isolation, third-party firewalls, or organization policies can still prevent communication.
+**First:** connect both devices to the same router. The PC can use Ethernet. **No USB, developer options, or wireless debugging is required.**
 
-Android playback capture depends on the source app allowing it. Some apps and protected content cannot be captured. Wi-Fi transport uses unencrypted UDP; use it on a trusted local network.
+### 1. On the PC, select Wi-Fi
 
-## Bluetooth setup
+Keep the PC app open, then start sending from the phone.
 
-1. Pair your phone with the PC in Windows Bluetooth settings.
-2. Open BlueAudioSink and select your phone in **Settings → Devices** (`设置 → 连接设备`). Choose the PC's playback device in **General** (`常规`).
-3. Select **Bluetooth** (`蓝牙`) and connect. Play audio on the phone and select the PC as its Bluetooth media output if needed.
+![PC Wi-Fi guide: mode, audio status, and manual-add address](docs/images/wifi-pc-en.png)
 
-The Android sender is not required for Bluetooth mode. Bluetooth audio reception depends on Windows, the adapter, and its driver. With auto-connect enabled, the app attempts to connect to the preferred phone; the phone and operating system still control whether audio is actually sent. The UI distinguishes readiness from detected audio activity.
+### 2. On the phone, select the PC and start sending
 
-## Shared settings
+Tap the PC → tap **开始发送** (Start sending) → approve Android's recording and capture prompts → play music or a video. Once started, the button becomes **停止发送** (Stop sending), as shown below.
 
-The **Settings** (`设置`) button serves both modes. Opening settings keeps the current audio session running.
+![Phone guide: choose the PC, start sending, and check Sending](docs/images/wifi-phone-en.png)
 
-- **General** (`常规`): playback device, launch at Windows sign-in, Bluetooth auto-connect, and Wi-Fi prebuffer.
-- **Devices** (`连接设备`): select or switch Bluetooth / Wi-Fi phones. A Wi-Fi phone must first select the PC in the sender app. Selecting a source locks reception to that phone for the current Wi-Fi session.
-- **Network** (`网络`): optional firewall troubleshooting controls.
+**PC missing?** Tap **刷新** (Refresh). Still missing? Tap **手动添加** (Manual add) and enter the PC address shown in the Windows app. Keep the default port unless you changed it.
 
-Closing the window exits the app. Mixing multiple phones simultaneously is not supported.
+### 3. Check the PC and choose your speakers
+
+The phone should show **发送中** (Sending). On the PC, **正在播放手机音频** means audio is playing; **已连接，当前静音** means connected but the incoming audio is silent. Play audio before judging the connection.
+
+Open **设置 → 常规** (Settings → General) to select your headphones or speakers.
+
+![Shared settings: playback device and buffering](docs/images/settings-en.png)
+
+## Bluetooth: pair → select → connect
+
+1. Pair your phone in **Windows system Bluetooth settings**.
+2. In BlueAudioSink, open **设置 → 连接设备 → 蓝牙手机** and select the phone. Choose the PC output in **常规**.
+3. Select **蓝牙 → 连接**. Play audio on the phone; choose the PC as its Bluetooth media output if needed.
+
+![Bluetooth mode and Connect button](docs/images/bluetooth-en.png)
+
+No Android sender is needed. Adapter and driver support is required. Auto-connect attempts to connect to the preferred phone; the phone must still send audio.
+
+## Switch phones
+
+Open **设置 → 连接设备** (Settings → Devices), choose Bluetooth or Wi-Fi phones, then click the phone you want. A Wi-Fi phone must first select the PC in its sender app and start sending. One source plays at a time.
+
+![Device switching guide](docs/images/devices-en.png)
+
+## No sound? Check these first
+
+| What you see | What to do |
+| --- | --- |
+| Phone cannot find the PC | Keep the PC on Wi-Fi mode. Check the same router; try Refresh or Manual add. Guest networks may isolate devices. |
+| Connected, currently silent | Play audio, check volumes, then try another source app. Some apps or protected content block playback capture. |
+| Audio received but cannot be heard | Select the correct headphones/speakers in Settings → General. |
+| Audio stutters | Prefer 5 GHz Wi-Fi. Increase buffering one step; this adds latency. |
+| Wi-Fi still cannot receive | Try the optional firewall helper below. |
+
+### Firewall helper — only if Wi-Fi reception fails
+
+If audio works, **skip this**. Otherwise open **设置 → 网络** (Settings → Network) → **尝试开启放行**, then approve the Windows administrator prompt. This only adds rules for this EXE, private networks, and local-subnet sources. You can remove its rules on the same page.
+
+![Optional firewall troubleshooting](docs/images/network-en.png)
+
+Moving the EXE requires configuring the rule again. Public networks, organization policies, third-party firewalls, or router isolation can still block reception.
+
+Wi-Fi audio uses unencrypted UDP; use a trusted network. Closing the PC window exits the app. Opening Settings keeps audio running. Mixing multiple phones simultaneously is not supported.
 
 ## Build from source
 

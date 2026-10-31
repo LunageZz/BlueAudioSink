@@ -269,6 +269,45 @@ class Program
             Send(b, WifiTransport.TypeAudio);
             Wait(() => r.GetSnapshot().Remote == bId && r.GetSnapshot().Received == 1 && r.GetSnapshot().BufferMs == 5, "B audio not independently buffered");
         });
+        Test("BAS2 microphone golden header is isolated from legacy playback", () => {
+            var pcm = Signal(5);
+            var packet = DualStreamTransport.Build(1, 0x12345678, uint.MaxValue, 0x80000001, pcm, true);
+            byte[] expected = { 0x42,0x41,0x53,0x32,1,1,0,0,0x78,0x56,0x34,0x12,255,255,255,255,1,0,0,128 };
+            Assert(packet.Take(20).SequenceEqual(expected), "Wire format mismatch");
+            Assert(DualStreamTransport.TryRead(packet, packet.Length, out var h) && h.Stream == 1 && h.Sequence == uint.MaxValue, "Decode failed");
+            Assert(!WifiTransport.TryReadHeader(packet, packet.Length, out _), "Legacy receiver accepts microphone");
+            packet[6] = 1;
+            Assert(!DualStreamTransport.TryRead(packet, packet.Length, out _), "Reserved field accepted");
+        });
+        byte[] Constant(short value) {
+            var data = new byte[20 * 192];
+            for (int i = 0; i < data.Length; i += 2) { data[i] = (byte)value; data[i + 1] = (byte)(value >> 8); }
+            return data;
+        }
+        Test("Media and mic remain isolated; sharing never changes headphones", () => {
+            var router = new PhoneAudioRouter(); var media = Constant(2000); var mic = Constant(3000);
+            router.AddMedia(media, 0, media.Length); router.AddMicrophone(mic, 0, mic.Length);
+            var a = new byte[media.Length]; var b = new byte[mic.Length];
+            router.Headphones.Read(a, 0, a.Length); router.VirtualMicrophone.Read(b, 0, b.Length);
+            Assert(a.SequenceEqual(media) && b.SequenceEqual(mic), "Streams leaked across outputs");
+            router.ShareMedia = true;
+            router.AddMedia(media, 0, media.Length); router.AddMicrophone(mic, 0, mic.Length);
+            router.Headphones.Read(a, 0, a.Length); router.VirtualMicrophone.Read(b, 0, b.Length);
+            Assert(a.SequenceEqual(media) && b.SequenceEqual(Constant(5000)), "Sharing interrupted media or lost mix");
+        });
+        Test("Share toggle clears queued media without discarding headphone audio", () => {
+            var router = new PhoneAudioRouter { ShareMedia = true }; var media = Constant(2000);
+            router.AddMedia(media, 0, media.Length); router.ShareMedia = false; router.ShareMedia = true;
+            var a = new byte[media.Length]; var b = new byte[media.Length];
+            router.Headphones.Read(a, 0, a.Length); router.VirtualMicrophone.Read(b, 0, b.Length);
+            Assert(a.SequenceEqual(media) && b.All(v => v == 0), "Toggle leaked stale music or cleared headphones");
+        });
+        Test("Virtual microphone mix saturates instead of integer wrap", () => {
+            var router = new PhoneAudioRouter { ShareMedia = true }; var loud = Constant(30000);
+            router.AddMedia(loud, 0, loud.Length); router.AddMicrophone(loud, 0, loud.Length);
+            var actual = new byte[loud.Length]; router.VirtualMicrophone.Read(actual, 0, actual.Length);
+            Assert(actual.SequenceEqual(Constant(short.MaxValue)), "Clipping wrapped PCM sign");
+        });
         Console.WriteLine($"{passed} tests passed");
     }
     sealed class FailingPlayer : IWavePlayer

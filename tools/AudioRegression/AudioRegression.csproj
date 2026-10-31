@@ -10,5 +10,7 @@
     <Compile Include="../../src/SinkLite/Ui/ConnectionPresentation.cs" Link="ConnectionPresentation.cs" />
     <Compile Include="../../src/SinkLite/Core/Models.cs" Link="Models.cs" />
     <Compile Include="../../src/SinkLite/Platform/Log.cs" Link="Log.cs" />
+    <Compile Include="../../src/SinkLite/Core/DualStreamTransport.cs" Link="DualStreamTransport.cs" />
+    <Compile Include="../../src/SinkLite/Core/PhoneAudioRouter.cs" Link="PhoneAudioRouter.cs" />
   </ItemGroup>
 </Project>

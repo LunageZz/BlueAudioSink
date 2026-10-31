@@ -8,6 +8,8 @@ enum class LinkPhase { IDLE, CONNECTED, STREAMING }
 
 /** 单页 UI 的全部状态（由 [LinkController] 唯一持有）。 */
 data class SenderUiState(
+    val bluetooth: Boolean = false,
+    val pairedDevices: List<DiscoveredDevice> = emptyList(),
     val phase: LinkPhase = LinkPhase.IDLE,
     val microphoneEnabled: Boolean = false,
     val mediaEnabled: Boolean = true,

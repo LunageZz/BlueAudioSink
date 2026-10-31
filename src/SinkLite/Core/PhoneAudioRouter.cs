@@ -27,6 +27,7 @@ namespace SinkLite.Core
                 if (!virtualReady) { microphone.Clear(); sharedMedia.Clear(); }
             }
         }
+        public void SetTargetLatency(int ms) { lock(sync) { headphones.TargetMs=ms; microphone.TargetMs=ms; sharedMedia.TargetMs=ms; } }
         public IWaveProvider Headphones => headphones;
         public void EnableMmcss(bool enabled) { headphones.UseMmcss=enabled; microphone.UseMmcss=enabled; }
         public void ReleaseHeadphoneThread() { headphones.ReleaseAudioThread(); }

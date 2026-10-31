@@ -375,6 +375,41 @@ class Program
             Assert(!EndpointRegistry.IsCableRender(new EndpointInfo { IsRender=false,IsActive=true,Name="CABLE Output (VB-Audio Virtual Cable)" }),"Capture endpoint selected for rendering");
             Assert(EndpointRegistry.IsCableRender(new EndpointInfo { IsRender=true,IsActive=true,Name="CABLE Input (VB-Audio Virtual Cable)" }),"Official cable input not found");
         });
+        Test("Bluetooth ADPCM cross-language vectors survive packet drops and keep streams isolated", () => {
+            using var fixture=JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory,"bluetooth-adpcm.json")));
+            foreach(var vector in fixture.RootElement.EnumerateArray().Reverse()) {
+                byte[] encoded=Convert.FromHexString(vector.GetProperty("encoded").GetString());
+                byte[] expected=Convert.FromHexString(vector.GetProperty("decoded").GetString());
+                Assert(expected.SequenceEqual(BluetoothAudioCodec.Decode(encoded)),"ADPCM mismatch");
+                encoded[26]=89;
+                try { BluetoothAudioCodec.Decode(encoded); throw new Exception("Invalid predictor accepted"); } catch(InvalidDataException) { }
+            }
+        });
+        Test("Bluetooth framing handles fragmented and coalesced frames and rejects truncation", () => {
+            var packet=WifiTransport.BuildPacket(11,0,7,0,new byte[24]);
+            var frame=BluetoothAudioCodec.Frame(packet);
+            using var combined=new FragmentedStream(frame.Concat(frame).ToArray());
+            Assert(packet.SequenceEqual(BluetoothAudioCodec.Read(combined)),"First frame");
+            Assert(packet.SequenceEqual(BluetoothAudioCodec.Read(combined)),"Second frame");
+            using var truncated=new MemoryStream(frame.Take(frame.Length-1).ToArray());
+            try { BluetoothAudioCodec.Read(truncated); throw new Exception("Truncated frame accepted"); } catch(EndOfStreamException) { }
+            frame[0]=255; frame[1]=255;
+            try { BluetoothAudioCodec.Read(new MemoryStream(frame)); throw new Exception("Oversized frame accepted"); } catch(InvalidDataException) { }
+        });
+        Test("Bluetooth local receiver opens no UDP sockets and disables duplicate headphone routing", () => {
+            using var engine=new WifiReceiver(log,45678,45679,160,400,"Bluetooth");
+            var outgoing=new System.Collections.Concurrent.ConcurrentQueue<byte[]>();
+            engine.StartLocalTransport(outgoing.Enqueue);
+            engine.ReceiveTransportPacket(WifiTransport.BuildPacket(10,0,123,0,BitConverter.GetBytes(3U)));
+            Assert(Get(engine,"controlSocket")==null && Get(engine,"audioSocket")==null,"UDP opened");
+            var session=Get(engine,"dual");
+            Assert(session!=null && !(bool)Get(session,"routeMediaToHeadphones"),"Duplicate headphones");
+            var state=engine.GetSnapshot();
+            Assert(state.DualMode,"No dual session");
+            Assert(outgoing.Any(p=>p[4]==11),"No control ACK on RFCOMM");
+            engine.Stop();
+            Assert(Get(engine,"dual")==null,"Session survived disconnect");
+        });
         Console.WriteLine($"{passed} tests passed");
     }
     sealed class FailingPlayer : IWavePlayer
@@ -407,4 +442,11 @@ class Program
         Console.WriteLine(JsonSerializer.Serialize(new { device = device.FriendlyName, rate = capture.WaveFormat.SampleRate,
             bits = capture.WaveFormat.BitsPerSample, channels = capture.WaveFormat.Channels, format = capture.WaveFormat.ToString(), seconds, bytes = writer.Length, path }));
     }
+}
+
+sealed class FragmentedStream : MemoryStream
+{
+    public FragmentedStream(byte[] bytes) : base(bytes) { }
+    public override int Read(Span<byte> buffer) => base.Read(buffer.Slice(0,Math.Min(buffer.Length,3)));
+    public override int Read(byte[] buffer,int offset,int count) => base.Read(buffer,offset,Math.Min(count,3));
 }

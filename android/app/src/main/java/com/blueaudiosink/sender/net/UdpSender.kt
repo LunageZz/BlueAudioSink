@@ -23,12 +23,13 @@ import java.util.concurrent.Executors
  * 因此控制包（HELLO/START/STOP）全部投递到内部单线程 controlExecutor 执行，
  * AUDIO 由采集发送线程调用；START 发出后才打开 AUDIO 闸门，保证顺序。
  */
-class UdpSender(context: Context) {
+class UdpSender(context: Context, private val transport: PacketTransport? = null) {
 
     interface Listener {
         fun onOffer(device: DiscoveredDevice)
         fun onPing(targetHost: String, targetPort: Int, t1Us: Int, receivedAtUs: Int)
         fun onMicrophoneState(status: MicrophoneStatus) {}
+        fun onDisconnected(message: String) { onError(message) }
         fun onError(message: String)
     }
 
@@ -82,6 +83,7 @@ class UdpSender(context: Context) {
     private var lastStateMs = 0L
     private var negotiationAt = 0L
     private var negotiationWarned = false
+    @Volatile private var shareMedia = false
     fun isCurrentSession(id: Int): Boolean = synchronized(sendLock) { session != 0 && session == id }
     fun isDualReady(): Boolean = synchronized(sendLock) { session!=0 && !startPending && SystemClock.elapsedRealtime()-lastStateMs<3000 }
 
@@ -115,14 +117,14 @@ class UdpSender(context: Context) {
             if (now - lastRetryMs < 500) return
             lastRetryMs = now
             // Re-establish a PC session after restart; never send microphone PCM unacknowledged.
-            if (startPending && dualFlags == 1 && now-negotiationAt>3000) {
+            if (transport == null && startPending && dualFlags == 1 && now-negotiationAt>3000) {
                 session=0; dualFlags=0; startPending=false
                 sendControlLocked(PacketCodec.TYPE_START); audioEnabled=true
                 return
             }
-            if(startPending && dualFlags != 1 && now-negotiationAt>3000 && !negotiationWarned) {
+            if(startPending && (dualFlags != 1 || transport != null) && now-negotiationAt>3000 && !negotiationWarned) {
                 negotiationWarned=true
-                listener?.onError("电脑未确认双路连接，请检查 Wi-Fi、端口及 Windows 接收端版本")
+                listener?.onError("电脑未确认连接，请检查连接方式及 Windows 接收端版本")
             }
             if (startPending || now - lastStateMs > 3000) {
                 startPending = true; audioEnabled = false
@@ -132,6 +134,7 @@ class UdpSender(context: Context) {
         }
     }
     private fun sendRawLocked(data: ByteArray) {
+        if (transport != null) { transport.send(data); return }
         val address = resolveTarget() ?: return
         try { socket?.send(DatagramPacket(data, data.size, address, targetPort)) }
         catch (ex: Exception) { listener?.onError("控制指令发送失败：" + ex.message) }
@@ -142,6 +145,23 @@ class UdpSender(context: Context) {
 
     /** 绑定 45678 并开始收包。重复调用安全。 */
     fun open(): Boolean {
+        if (closed) return false
+        if (transport != null) {
+            if (running) return true
+            running = true
+            val opened = transport.open({ bytes ->
+                val packet = DatagramPacket(bytes,bytes.size,InetAddress.getLoopbackAddress(),PacketCodec.CONTROL_PORT)
+                dispatchPacket(packet,bytes)
+            }, { message -> running=false; audioEnabled=false; if (!closed) listener?.onDisconnected(message) })
+            if (!opened) { running=false; return false }
+            receiveThread=Thread({
+                while(running) {
+                    retryPending()
+                    try { Thread.sleep(100) } catch (_: InterruptedException) { break }
+                }
+            }, "bluetooth-retry").apply { isDaemon=true; start() }
+            return true
+        }
         if (socket != null) return true
         val sock = try {
             DatagramSocket(null).apply {
@@ -165,9 +185,10 @@ class UdpSender(context: Context) {
         return true
     }
 
-    fun isOpen(): Boolean = socket != null
+    fun isOpen(): Boolean = if (transport != null) running else socket != null
 
     /** 关闭 socket；先让已排队的 STOP 发完（同一 executor 保证顺序）。 */
+    @Synchronized
     fun close() {
         if (closed) return
         closed = true
@@ -176,6 +197,8 @@ class UdpSender(context: Context) {
         controlExecutor.execute {
             synchronized(sendLock) {
                 try {
+                    transport?.close()
+                    receiveThread?.interrupt()
                     socket?.close()
                 } catch (_: Exception) {
                 }
@@ -247,12 +270,14 @@ class UdpSender(context: Context) {
         if (!audioEnabled) return
         synchronized(sendLock) {
             if (!audioEnabled) return
-            val sock = socket ?: return
+            val sock = socket
+            if (transport == null && sock == null) return
             val address = resolveTarget() ?: return
             if (dualFlags != 0) {
                 if (stream !in 0..1 || dualFlags and (1 shl stream) == 0) return
+                if (transport != null && stream == 0 && !shareMedia) return
                 val packet = DualStreamPacketCodec.build(stream, session, streamSequence[stream]++, timestampUs, payload, discontinuity)
-                try { sock.send(DatagramPacket(packet, packet.size, address, targetPort)) }
+                try { if (transport != null) transport.send(packet,true) else sock?.send(DatagramPacket(packet, packet.size, address, targetPort)) }
                 catch (ex: Exception) { listener?.onError("音频发送失败：" + ex.message) }
                 return
             }
@@ -262,7 +287,7 @@ class UdpSender(context: Context) {
             PacketCodec.writeHeader(frameBuffer, PacketCodec.TYPE_AUDIO, flags, packetSeq, timestampUs)
             System.arraycopy(payload, 0, frameBuffer, PacketCodec.HEADER_SIZE, length)
             try {
-                sock.send(DatagramPacket(frameBuffer, PacketCodec.HEADER_SIZE + length, address, targetPort))
+                sock?.send(DatagramPacket(frameBuffer, PacketCodec.HEADER_SIZE + length, address, targetPort))
             } catch (e: Exception) {
                 sendFailures++
                 Log.w(TAG, "send audio failed count=$sendFailures", e)
@@ -273,6 +298,7 @@ class UdpSender(context: Context) {
     }
 
     private fun resolveTarget(): InetAddress? {
+        if (transport != null) return if (targetHost != null) InetAddress.getLoopbackAddress() else null
         val cached = cachedAddress
         if (cached != null) return cached
         val host = targetHost ?: return null
@@ -299,14 +325,17 @@ class UdpSender(context: Context) {
                 if (running) Log.w(TAG, "receive failed", e)
                 break
             }
-            val length = packet.length
-            if (!PacketCodec.isValid(buffer, length)) continue
-            when (PacketCodec.typeOf(buffer, length)) {
-                PacketCodec.TYPE_OFFER -> handleOffer(packet, buffer)
-                PacketCodec.TYPE_PING -> handlePing(packet, buffer)
-                11 -> handleMicrophoneState(packet, buffer)
-                else -> Unit
-            }
+            dispatchPacket(packet,buffer)
+        }
+    }
+
+    private fun dispatchPacket(packet: DatagramPacket, buffer: ByteArray) {
+        val length=packet.length
+        if (!PacketCodec.isValid(buffer,length)) return
+        when (PacketCodec.typeOf(buffer,length)) {
+            PacketCodec.TYPE_OFFER -> if (transport == null) handleOffer(packet,buffer)
+            PacketCodec.TYPE_PING -> handlePing(packet,buffer)
+            11 -> handleMicrophoneState(packet,buffer)
         }
     }
 
@@ -352,7 +381,7 @@ class UdpSender(context: Context) {
             payloadLength = 4,
         )
         try {
-            socket?.send(DatagramPacket(pong, pong.size, packet.address, packet.port))
+            if (transport != null) transport.send(pong) else socket?.send(DatagramPacket(pong, pong.size, packet.address, packet.port))
         } catch (e: Exception) {
             Log.w(TAG, "send PONG failed", e)
             listener?.onError("回送 PONG 失败：" + (e.message ?: e.javaClass.simpleName))
@@ -370,6 +399,7 @@ class UdpSender(context: Context) {
             val muted = PacketCodec.getIntLE(buffer, 24)
             val volume = PacketCodec.getIntLE(buffer, 28)
             if (muted !in 0..1 || volume !in 0..100) return
+            shareMedia = PacketCodec.getIntLE(buffer, 36) != 0
             revision = incomingRevision; lastStateMs = SystemClock.elapsedRealtime()
             startPending = false; audioEnabled = true
             // While waiting for a request ACK, keep the phone's desired control values.
@@ -396,15 +426,7 @@ class UdpSender(context: Context) {
     }
 
     private fun sendLocked(type: Int, timestampUs: Int, payload: ByteArray?, payloadLength: Int) {
-        val sock = socket ?: return
-        val address = resolveTarget() ?: return
-        val packetBytes = PacketCodec.build(type, 0, timestampUs, payload, payloadLength)
-        try {
-            sock.send(DatagramPacket(packetBytes, packetBytes.size, address, targetPort))
-        } catch (e: Exception) {
-            Log.w(TAG, "send control " + type + " failed", e)
-            listener?.onError("发送失败：" + (e.message ?: e.javaClass.simpleName))
-        }
+        sendRawLocked(PacketCodec.build(type, 0, timestampUs, payload, payloadLength))
     }
 
     private fun acquireMulticastLock() {

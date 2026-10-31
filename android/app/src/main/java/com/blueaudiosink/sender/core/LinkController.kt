@@ -89,6 +89,7 @@ object LinkController : UdpSender.Listener {
 
     fun startDiscovery(context: Context) {
         attach(context)
+        if (_state.value.bluetooth) { refreshBluetoothDevices(); return }
         if (discoveryActive) return
         if (!ensureSocket()) return
         discoveryActive = true
@@ -118,6 +119,7 @@ object LinkController : UdpSender.Listener {
             postMessage("请先停止发送，再切换电脑")
             return false
         }
+        if (_state.value.bluetooth) return connectBluetooth(ip)
         val host = ip.trim()
         if (host.isEmpty()) {
             postMessage("请输入电脑 IP")
@@ -150,6 +152,40 @@ object LinkController : UdpSender.Listener {
             )
         }
         udp.sendHello(deviceName)
+        return true
+    }
+
+    @Synchronized
+    fun setBluetooth(enabled: Boolean) {
+        if (streaming || _state.value.bluetooth == enabled) return
+        stopDiscovery()
+        sender?.close(); sender=null; stopWatchdog()
+        lastPingAtMs=0
+        _state.update { it.copy(bluetooth=enabled,targetIp=null,targetName=null,phase=LinkPhase.IDLE,
+            microphoneSynced=false,virtualMicrophoneReady=false,shareMedia=false) }
+        if (enabled) refreshBluetoothDevices() else appContext?.let { context -> Thread { startDiscovery(context) }.start() }
+    }
+    @android.annotation.SuppressLint("MissingPermission")
+    fun refreshBluetoothDevices() {
+        val context=appContext ?: return
+        try {
+            val adapter=context.getSystemService(android.bluetooth.BluetoothManager::class.java)?.adapter
+            if (adapter == null || !adapter.isEnabled) { postMessage("请先开启蓝牙，并在系统设置中与电脑配对"); return }
+            val paired=adapter.bondedDevices.map { DiscoveredDevice(it.name ?: it.address,it.address,45679,0) }.sortedBy { it.name }
+            _state.update { it.copy(pairedDevices=paired) }
+        } catch (_: SecurityException) { postMessage("请允许访问附近设备以使用蓝牙") }
+    }
+    @Synchronized
+    private fun connectBluetooth(address: String): Boolean {
+        if (!android.bluetooth.BluetoothAdapter.checkBluetoothAddress(address)) { postMessage("蓝牙地址无效"); return false }
+        sender?.close(); sender=null; stopWatchdog(); lastPingAtMs=0; pingReceived=0; pingMissed=0
+        _state.update { it.copy(targetIp=address,targetPort=45679,
+            targetName=it.pairedDevices.firstOrNull { d -> d.ip==address }?.name ?: address,
+            phase=LinkPhase.IDLE,microphoneSynced=false,virtualMicrophoneReady=false,shareMedia=false) }
+        if (!ensureSocket()) return false
+        sender?.setTarget(address,45679)
+        sender?.sendHello(deviceName)
+        postMessage("正在连接蓝牙，请确认电脑已开启 BlueAudioSink 的蓝牙模式")
         return true
     }
 
@@ -304,7 +340,7 @@ object LinkController : UdpSender.Listener {
         pingReceived++
         val hasTarget = _state.value.targetIp != null
         // 收到首包 = 连接成功：把当前目标写入本地记忆（之后从列表直接点连）
-        if (hasTarget) {
+        if (hasTarget && !_state.value.bluetooth) {
             val current = _state.value
             rememberTarget(current.targetIp.orEmpty(), current.targetPort, current.targetName)
         }
@@ -319,6 +355,14 @@ object LinkController : UdpSender.Listener {
                 lossPermille = lossPermille(),
             )
         }
+    }
+
+    override fun onDisconnected(message: String) {
+        fail(message)
+        _state.update { it.copy(microphoneSynced=false,virtualMicrophoneReady=false) }
+        appContext?.let { it.stopService(android.content.Intent(it,com.blueaudiosink.sender.capture.AudioCaptureService::class.java)) }
+        synchronized(this) { sender?.close(); sender=null }
+        stopWatchdog()
     }
 
     override fun onError(message: String) {
@@ -379,9 +423,23 @@ object LinkController : UdpSender.Listener {
             if (!existing.isOpen() && !existing.open()) return false
             return true
         }
-        val udp = UdpSender(context).also { it.listener = this }
-        if (!udp.open()) return false
-        sender = udp
+        val current=_state.value
+        val transport=if(current.bluetooth) {
+            val address=current.targetIp ?: return false
+            com.blueaudiosink.sender.net.BluetoothPacketTransport(context,address)
+        } else null
+        val udp = UdpSender(context,transport)
+        udp.listener = object : UdpSender.Listener {
+            override fun onOffer(device: DiscoveredDevice) { if(sender===udp) this@LinkController.onOffer(device) }
+            override fun onPing(targetHost: String,targetPort: Int,t1Us: Int,receivedAtUs: Int) { if(sender===udp) this@LinkController.onPing(targetHost,targetPort,t1Us,receivedAtUs) }
+            override fun onMicrophoneState(status: com.blueaudiosink.sender.net.MicrophoneStatus) { if(sender===udp) this@LinkController.onMicrophoneState(status) }
+            override fun onError(message: String) { if(sender===udp) this@LinkController.onError(message) }
+            override fun onDisconnected(message: String) { synchronized(this@LinkController) { if(sender===udp) this@LinkController.onDisconnected(message) } }
+        }
+        current.targetIp?.let { udp.setTarget(it,current.targetPort) }
+        sender=udp
+        if (!udp.open()) { udp.close(); sender=null; return false }
+        if(sender!==udp) return false
         startWatchdog()
         return true
     }

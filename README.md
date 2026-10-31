@@ -11,7 +11,7 @@ Developed by **liubaiqing**. The apps currently use a Chinese interface; the gui
 | :---: | :---: |
 | <img src="docs/images/windows-wifi.png" width="480" alt="Windows receiver: connected and currently silent" /> | <img src="docs/images/android-wifi.png" width="235" alt="Android sender: sending audio, with developer credit at the bottom" /> |
 
-**Bluetooth** needs no Android sender. **Wi-Fi** uses the companion Android app. Both share the PC's playback and device settings.
+**Bluetooth media playback** needs no Android sender. **Microphone forwarding over Bluetooth or Wi-Fi** uses the companion Android app and VB-CABLE. The development branch adds dual audio, synchronized mute/volume, and [Bluetooth microphone setup](docs/13-bluetooth-microphone.md); this preview still needs hardware acceptance. The download links below are the original 0.1.0 release.
 
 ## Download and open
 
@@ -63,7 +63,7 @@ Open **设置 → 常规** (Settings → General) to select your headphones or s
 
 ![Bluetooth mode and Connect button](docs/images/bluetooth-en.png)
 
-No Android sender is needed. Adapter and driver support is required. Auto-connect attempts to connect to the preferred phone; the phone must still send audio.
+Media playback needs no Android sender; microphone forwarding needs the companion app ([preview guide](docs/13-bluetooth-microphone.md)). Adapter and driver support is required. Auto-connect attempts to connect to the preferred phone; the phone must still send audio.
 
 ## Switch phones
 

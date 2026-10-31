@@ -39,6 +39,18 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    private val bluetoothPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) LinkController.setBluetooth(true)
+            else LinkController.postMessage("需要附近设备权限才能使用蓝牙麦克风")
+        }
+    private fun selectTransport(bluetooth: Boolean) {
+        if (bluetooth && Build.VERSION.SDK_INT >= 31 &&
+            ContextCompat.checkSelfPermission(this,android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            bluetoothPermissionLauncher.launch(android.Manifest.permission.BLUETOOTH_CONNECT)
+        else LinkController.setBluetooth(bluetooth)
+    }
+
     private val consentLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             pendingStart = false
@@ -70,6 +82,8 @@ class MainActivity : ComponentActivity() {
                 SenderScreen(
                     state = state,
                     onStart = ::handleStart,
+                    onTransportChange = ::selectTransport,
+                    onBluetoothSettings = { startActivity(android.content.Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)) },
                     onStop = {
                         ContextCompat.startForegroundService(
                             this,

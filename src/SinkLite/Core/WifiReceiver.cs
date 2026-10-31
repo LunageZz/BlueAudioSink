@@ -65,6 +65,8 @@ namespace SinkLite.Core
         private readonly object sync = new object();
         private readonly MicrophoneState microphoneControls;
         private DualStreamSession dual;
+        private Action<byte[]> localSend;
+        private bool localTransport;
         private readonly List<DualStreamSession> retiredDual = new List<DualStreamSession>();
         private long lastMicStateTicks;
         private uint lastMicRevision;
@@ -95,7 +97,7 @@ namespace SinkLite.Core
                         if(dual!=null) { obsoleteDualIds.Enqueue(dual.Id); while(obsoleteDualIds.Count>32) obsoleteDualIds.Dequeue(); }
                         BeginSessionLocked(now,false,0);
                         microphoneControls.BeginSession();
-                        dual=new DualStreamSession(h.Seq,(flags&1)!=0,(flags&2)!=0,microphoneControls,log);
+                        dual=new DualStreamSession(h.Seq,(flags&1)!=0,(flags&2)!=0,microphoneControls,log,!localTransport);
                     }
                     sessionEndpoint=remote=from; lastAudioTicks=lastAnyTicks=now;
                     state=SinkState.LinkReady; detail="正在准备双路音频";
@@ -288,6 +290,25 @@ namespace SinkLite.Core
                 rebuffering = false;
                 if (sessionEndpoint != null) { state = SinkState.LinkReady; detail = "正在切换播放设备"; }
             }
+        }
+
+        // Same session/control engine on a framed local transport; no UDP sockets or discovery.
+        public void StartLocalTransport(Action<byte[]> send)
+        {
+            lock(sync) {
+                if(running) throw new InvalidOperationException("Receiver already running");
+                localTransport=true; localSend=send; running=true;
+                playoutThread=new Thread(PlayoutLoop) { IsBackground=true,Name="BluetoothPlayout" };
+                playoutThread.Start(); state=SinkState.Armed;
+            }
+        }
+        public void ReceiveTransportPacket(byte[] packet)
+        {
+            if(!running || !localTransport) return;
+            if(!DualStreamTransport.TryRead(packet,packet.Length,out _) &&
+                (!WifiTransport.TryReadHeader(packet,packet.Length,out var h) ||
+                 (h.Type!=WifiTransport.TypeHello && h.Type!=WifiTransport.TypePong && h.Type!=WifiTransport.TypeStop && h.Type!=10 && h.Type!=12))) return;
+            HandlePacket(packet,packet.Length,new IPEndPoint(IPAddress.Loopback,45678),clock.ElapsedTicks,true);
         }
 
         public bool Start()
@@ -934,7 +955,7 @@ namespace SinkLite.Core
                     lock (sync)
                     {
                         needOpen = dual==null ? ProcessLocked(now) : false;
-                        if(dual!=null && now-lastAudioTicks>TicksFromMs(5000)) GoArmedLocked("双路音频已断开");
+                        if(dual!=null && now-(localTransport?lastAnyTicks:lastAudioTicks)>TicksFromMs(5000)) GoArmedLocked("双路音频已断开");
                         release = pendingRelease;
                         pendingRelease = null;
                     }
@@ -1473,6 +1494,7 @@ namespace SinkLite.Core
 
         private void SendControlPacket(byte[] packet, IPEndPoint target)
         {
+            if(localTransport) { localSend?.Invoke(packet); return; }
             Socket socket = controlSocket;
             if (socket == null || target == null || packet == null)
             {

@@ -75,6 +75,8 @@ import java.util.Locale
 fun SenderScreen(
     state: SenderUiState,
     onStart: () -> Unit,
+    onTransportChange: (Boolean) -> Unit,
+    onBluetoothSettings: () -> Unit,
     onStop: () -> Unit,
     onConnect: (String, Int) -> Unit,
     onConnectManual: (String) -> Unit,
@@ -121,6 +123,14 @@ fun SenderScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 StatusCard(state)
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    listOf("Wi-Fi", "蓝牙").forEachIndexed { index,label ->
+                        SegmentedButton(selected = state.bluetooth == (index==1),
+                            enabled = state.phase != LinkPhase.STREAMING,
+                            onClick = { onTransportChange(index==1) },
+                            shape = SegmentedButtonDefaults.itemShape(index,2)) { Text(label) }
+                    }
+                }
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
                         Text("音频来源", style = MaterialTheme.typography.titleMedium)
@@ -156,7 +166,25 @@ fun SenderScreen(
                         }
                     }
                 }
-                DeviceSection(
+                if (state.bluetooth) {
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text("已配对的电脑",style=MaterialTheme.typography.titleMedium)
+                            Text("电脑端选择蓝牙模式；媒体声音仍通过系统蓝牙播放，麦克风由本应用传输。")
+                            for (device in state.pairedDevices) TextButton(
+                                enabled=state.phase != LinkPhase.STREAMING,
+                                onClick={ onConnect(device.ip,device.port) }) {
+                                Text(if(state.targetIp==device.ip) "✓ ${device.name}" else device.name)
+                            }
+                            if (state.pairedDevices.isEmpty()) Text("暂无已配对设备，请先在系统蓝牙设置中配对电脑")
+                            Row {
+                                TextButton(onClick={ com.blueaudiosink.sender.core.LinkController.refreshBluetoothDevices() }) { Text("刷新") }
+                                TextButton(onClick=onBluetoothSettings) { Text("蓝牙设置") }
+                            }
+                            Text("只传麦克风时可关闭媒体来源，无需录屏授权。分享媒体声需开启媒体来源并授权录屏。")
+                        }
+                    }
+                } else DeviceSection(
                     state = state,
                     manualIp = manualIp,
                     manualOpen = manualOpen,

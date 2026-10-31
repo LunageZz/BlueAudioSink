@@ -68,6 +68,7 @@ namespace SinkLite.UI
         private readonly SinkController controller;
         private readonly Log log;
         private readonly WifiController wifi;
+        private readonly BluetoothMicrophoneReceiver bluetoothMicrophone;
 
         private IntPtr hwnd;
         private Win32.WndProcDelegate wndProc;
@@ -140,6 +141,7 @@ namespace SinkLite.UI
             Settings settings = Settings.Load();
             pageSettings = settings;
             wifi = new WifiController(log, settings.WifiPort, settings.BufferBaseMs, settings.BufferMaxMs);
+            bluetoothMicrophone = new BluetoothMicrophoneReceiver(log,wifi.Microphone);
             wifiMode = startWifi || string.Equals(settings.Mode, "wifi", StringComparison.OrdinalIgnoreCase);
         }
 
@@ -217,6 +219,7 @@ namespace SinkLite.UI
                 }
                 RequestRepaint(true);
             }
+            if(!wifiMode) bluetoothMicrophone.Start();
         }
 
         /// <summary>从嵌入资源加载窗口图标，避免额外文件依赖。</summary>
@@ -359,11 +362,11 @@ namespace SinkLite.UI
         private string BuildPaintKey()
         {
             SinkSnapshot s = controller.Current;
-            WifiSnapshot w = wifi.Current;
+            WifiSnapshot w = wifiMode ? wifi.Current : bluetoothMicrophone.Current;
             return string.Concat(
                 (int)s.State, "|", s.Detail ?? "", "|", s.DeviceName ?? "", "|",
                 s.Peak.ToString("0.000"), "|", s.Hint ?? "", "|",
-                microphonePage, "|", cableMessage, "|", cableInstallTask!=null, "|", wifi.Microphone.Current.Revision, "|", w.MicrophoneStatus, "|",
+                microphonePage, "|", cableMessage, "|", cableInstallTask!=null, "|", wifi.Microphone.Current.Revision, "|", w.MicrophoneStatus, "|", bluetoothMicrophone.Status, "|",
                 deviceSettings, "|", networkSettings, "|", firewallTask != null, "|", firewallMessage, "|", firewallStatus.Available, "|", firewallStatus.RuleReady, "|", devicePage, "|", deviceListKey, "|", hoverArea, "|", pressedArea, "|",
                 dropdownOpen ? 1 : 0, "|", settingsMode ? 1 : 0, "|",
                 controller.Devices.Count, "|", cachedOutputs.Count, "|", cachedPreferredName, "|",
@@ -654,7 +657,7 @@ namespace SinkLite.UI
             if (area >= AreaDeviceBase && area < AreaDropdownBase)
                 return wifiMode || controller.Current.State != SinkState.Busy;
             if (area == AreaConnect) return controller.Devices.Count > 0 && controller.Current.State != SinkState.Busy;
-            if (area == AreaDisconnect) return controller.Current.State != SinkState.Idle && controller.Current.State != SinkState.Faulted;
+            if (area == AreaDisconnect) return bluetoothMicrophone.Connected || (controller.Current.State != SinkState.Idle && controller.Current.State != SinkState.Faulted);
             return true;
         }
 
@@ -868,12 +871,14 @@ namespace SinkLite.UI
                 case AreaConnect:
                 {
                     string deviceId = string.IsNullOrEmpty(pageSettings.DeviceId) ? null : pageSettings.DeviceId;
+                    bluetoothMicrophone.Start();
                     controller.RequestConnect(deviceId);
                     log.Info("Ui.ConnectClicked", ("device", deviceId ?? "(默认)"));
                     return;
                 }
 
                 case AreaDisconnect:
+                    bluetoothMicrophone.Disconnect();
                     controller.RequestDisconnect();
                     log.Info("Ui.DisconnectClicked");
                     return;
@@ -935,6 +940,7 @@ namespace SinkLite.UI
                         return;
                     }
 
+                    bluetoothMicrophone.Stop();
                     controller.RequestDisconnect();
                     wifiMode = true;
                     SaveMode("wifi");
@@ -944,6 +950,7 @@ namespace SinkLite.UI
                     // 先停 Wi-Fi 输出与 socket，再走蓝牙连接（协议 §8.2）。
                     wifi.Stop("bluetooth");
                     wifiMode = false;
+                    bluetoothMicrophone.Start();
                     SaveMode("bluetooth");
 
                     // 与启动时的自动连接语义保持一致；用户仍可手动点"连接"。
@@ -1366,6 +1373,10 @@ namespace SinkLite.UI
             DrawButton(hdc, m.ConnectRect, snapshot.State == SinkState.Flowing ? "重新连接" : "连接", AreaConnect, true);
             DrawButton(hdc, m.DisconnectRect, "断开", AreaDisconnect, false);
             Text(hdc, "更换手机或播放设备，请前往设置。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left, S(292), right, S(316)));
+            var microphone=bluetoothMicrophone.Current;
+            string microphoneStatus=microphone.DualMode ? (microphone.DeviceName+"："+microphone.MicrophoneStatus) : bluetoothMicrophone.Status;
+            Text(hdc,microphoneStatus,fontSmall,Win32.Rgb(88,102,122),Rect(m.Left,S(326),right,S(370)));
+            Text(hdc,"手机应用选择蓝牙并开始发送；音量与静音在设置中调整。",fontSmall,Win32.Rgb(88,102,122),Rect(m.Left,S(376),right,S(420)));
         }
 
         private void DrawDeviceSettings(IntPtr hdc, Metrics m)
@@ -1500,12 +1511,13 @@ namespace SinkLite.UI
             var saved=Settings.Load(); string old=virtualOutput?saved.VirtualRenderId:saved.PreferredRenderId;
             int index=choices.FindIndex(e=>e.Id==old); var selected=choices[(index+1)%choices.Count];
             Settings.Update(current=> { if(virtualOutput) current.VirtualRenderId=selected.Id; else current.PreferredRenderId=selected.Id; });
+            if(!virtualOutput && !wifiMode) controller.SetPreferredRender(selected.Id,selected.Name);
             pageSettings=Settings.Load(); ShowNotice("已选择："+selected.Name);
         }
         private void DrawMicrophonePage(IntPtr hdc, Metrics m)
         {
-            var state=wifi.Microphone.Current; var snapshot=wifi.Current;
-            Text(hdc,snapshot.DualMode?snapshot.MicrophoneStatus:"在手机开启麦克风后，选择 Wi-Fi 并开始发送",fontSmall,Win32.Rgb(88,102,122),Rect(m.Left,S(104),m.Left+m.ContentWidth,S(140)));
+            var state=wifi.Microphone.Current; var snapshot=wifiMode?wifi.Current:bluetoothMicrophone.Current;
+            Text(hdc,snapshot.DualMode?snapshot.MicrophoneStatus:(wifiMode?"在手机选择 Wi-Fi，开启麦克风并开始发送":bluetoothMicrophone.Status),fontSmall,Win32.Rgb(88,102,122),Rect(m.Left,S(104),m.Left+m.ContentWidth,S(140)));
             DrawPreference(hdc,m,S(146),AreaMicMute,"麦克风静音","与手机同步，不影响媒体声音",state.Muted);
             Text(hdc,"麦克风音量："+state.Volume+"%",fontBody,Win32.Rgb(23,40,63),Rect(m.Left+S(12),S(204),m.Left+m.ContentWidth,S(230)));
             var track=SettingsControlRect(m,AreaMicVolume);
@@ -1819,6 +1831,8 @@ namespace SinkLite.UI
 
         public void Dispose()
         {
+            bluetoothMicrophone.Dispose();
+            wifi.Dispose();
             try
             {
                 controller.SnapshotChanged -= OnSnapshotChanged;

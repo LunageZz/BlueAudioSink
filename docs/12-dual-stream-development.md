@@ -1,5 +1,7 @@
 # 手机媒体与麦克风：0.2.0 开发测试版
 
+后续 0.3.0 已扩展蓝牙麦克风，使用方法、带宽限制和验收范围见 [蓝牙麦克风说明](13-bluetooth-microphone.md)。本页保留 Wi-Fi 双路基础设计。
+
 ## 已接入的功能
 
 Android 可选择媒体、麦克风或两者。媒体使用 AudioPlaybackCapture（需要系统授权），麦克风使用单声道 AudioRecord MIC，扩展为 48 kHz / 16-bit / stereo 协议帧。仅麦克风不申请录屏授权；服务声明 microphone 与 mediaProjection 类型，按实际来源启动。停止、失败和系统撤销授权会结束采集并释放线程。

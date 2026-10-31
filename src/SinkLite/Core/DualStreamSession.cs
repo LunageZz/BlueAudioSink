@@ -47,7 +47,7 @@ namespace SinkLite.Core
         private readonly PhoneAudioRouter router=new PhoneAudioRouter();
         private readonly Log log;
         private readonly MicrophoneState controls;
-        private readonly bool mediaEnabled, micEnabled;
+        private readonly bool mediaEnabled, micEnabled, routeMediaToHeadphones;
         private WasapiOut headphones, virtualMic;
         private MMDevice headphoneDevice, virtualDevice;
         private string headphoneId, virtualId;
@@ -63,8 +63,10 @@ namespace SinkLite.Core
         private volatile string status="正在准备音频设备";
         public string OutputStatus { get => status; private set => status=value; }
         public long Received { get; private set; }
-        public DualStreamSession(uint id, bool media, bool mic, MicrophoneState controls, Log log)
+        public DualStreamSession(uint id, bool media, bool mic, MicrophoneState controls, Log log, bool routeMediaToHeadphones = true)
         {
+            this.routeMediaToHeadphones=routeMediaToHeadphones;
+            if(!routeMediaToHeadphones) router.SetTargetLatency(160);
             Id=id; mediaEnabled=media; micEnabled=mic; this.controls=controls; this.log=log;
             router.EnableMmcss(OperatingSystem.IsWindows());
             router.EnableOutputs(false,false);
@@ -94,7 +96,7 @@ namespace SinkLite.Core
                 ReleaseVirtual(); router.ClearVirtual(); virtualId=settings.VirtualRenderId; nextOpen=0;
                 router.EnableOutputs(HasHeadphones,false);
             }
-            if(now>=nextOpen && ((mediaEnabled && headphones==null)||virtualMic==null)) {
+            if(now>=nextOpen && ((mediaEnabled && routeMediaToHeadphones && headphones==null)||virtualMic==null)) {
                 nextOpen=now+Stopwatch.Frequency*3;
                 OpenDevices(settings);
             }
@@ -120,7 +122,7 @@ namespace SinkLite.Core
         private void OpenDevices(Settings settings)
         {
             var endpoints=EndpointRegistry.EnumerateAll();
-            if(mediaEnabled && headphones==null) try {
+            if(mediaEnabled && routeMediaToHeadphones && headphones==null) try {
                 using(var devices=new MMDeviceEnumerator()) {
                     var chosen=endpoints.FirstOrDefault(e=>e.IsActive&&e.IsRender&&!e.IsVirtual&&e.Id==settings.PreferredRenderId);
                     if(chosen==null) {
@@ -139,7 +141,7 @@ namespace SinkLite.Core
             } catch(Exception ex) { log.Error("Dual.MicrophoneOutputFault",("detail",ex.Message)); ReleaseVirtual(); }
             HasHeadphones=headphones!=null; HasVirtualOutput=virtualMic!=null;
             router.EnableOutputs(HasHeadphones,HasVirtualOutput);
-            OutputStatus=HasVirtualOutput ? (mediaEnabled&&!HasHeadphones?"虚拟麦克风已就绪；耳机设备不可用":"虚拟麦克风已就绪") : "未找到虚拟麦克风，请安装 VB-CABLE 或选择设备";
+            OutputStatus=HasVirtualOutput ? (mediaEnabled&&routeMediaToHeadphones&&!HasHeadphones?"虚拟麦克风已就绪；耳机设备不可用":"虚拟麦克风已就绪") : "未找到虚拟麦克风，请安装 VB-CABLE 或选择设备";
         }
         private void ReleaseHeadphones()
         {

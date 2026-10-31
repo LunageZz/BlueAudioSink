@@ -65,7 +65,9 @@ class Program
             var o = new AudioOutput(log); var x = Signal(80); o.Add(x, 0, x.Length);
             Set(r, "output", o); Set(r, "playing", true); Set(r, "state", SinkState.Flowing);
             Call(r, "AdaptLocked", 0L);
-            var b = (PlayoutBuffer)Get(o, "buffer"); byte[] y = new byte[x.Length]; b.Read(y, 0, y.Length);
+            // This is a PCM-only test, not a Windows render-thread scheduling test.
+            var b = (PlayoutBuffer)Get(o, "buffer"); b.UseMmcss = false;
+            byte[] y = new byte[x.Length]; b.Read(y, 0, y.Length);
             Assert(x.SequenceEqual(y) && r.GetSnapshot().TargetMs == 80, "Adaptation changed audio");
         });
         Test("Empty staging queue does not starve a healthy output buffer", () => {
@@ -90,6 +92,51 @@ class Program
             byte[] data = WifiTransport.BuildPacket(WifiTransport.TypeAudio, 0, seq, seq * 5000, Signal(5));
             Call(r, "HandlePacket", data, data.Length, new IPEndPoint(IPAddress.Loopback, 45678), now, false);
         }
+        Test("Long sessions cross signed timestamp boundary and full wrap without stale loss", () => {
+            using var r = new WifiReceiver(log, 0, 0, 80, 200, "test");
+            var from = new IPEndPoint(IPAddress.Loopback, 45678);
+            const uint start = 123456;
+            var begin = WifiTransport.BuildPacket(WifiTransport.TypeStart, 0, 0, start, null);
+            Call(r, "HandlePacket", begin, begin.Length, from, Ticks(1), false);
+            uint seq = 0;
+            // Advance one simulated second at a time; no wall-clock wait or real output.
+            // Clear only staged PCM so the test remains bounded over 75 simulated minutes.
+            for (long second = 0; second <= 4500; second++) {
+                uint ts = unchecked(start + (uint)(second * 1000000));
+                var audio = WifiTransport.BuildPacket(WifiTransport.TypeAudio, 0, seq++, ts, Signal(5));
+                Call(r, "HandlePacket", audio, audio.Length, from, Ticks(1) + second * Ticks(1000), false);
+                Call(r, "FlushReorderLocked", Ticks(1) + second * Ticks(1000));
+                Call(r, "ClearQueueLocked");
+            }
+            Assert(r.GetSnapshot().Received == 4501 && r.GetSnapshot().Stale == 0, "Long stream rejected after timestamp boundary");
+        });
+        Test("Stale startup audio is rejected even when START crosses uint wrap", () => {
+            using var r = new WifiReceiver(log, 0, 0, 80, 200, "test");
+            var from = new IPEndPoint(IPAddress.Loopback, 45678);
+            const uint start = uint.MaxValue - 2000;
+            var begin = WifiTransport.BuildPacket(WifiTransport.TypeStart, 0, 0, start, null);
+            Call(r, "HandlePacket", begin, begin.Length, from, Ticks(1), false);
+            var old = WifiTransport.BuildPacket(WifiTransport.TypeAudio, 0, 0, start - 200000, Signal(5));
+            Call(r, "HandlePacket", old, old.Length, from, Ticks(2), false);
+            var fresh = WifiTransport.BuildPacket(WifiTransport.TypeAudio, 0, 0, unchecked(start + 5000), Signal(5));
+            Call(r, "HandlePacket", fresh, fresh.Length, from, Ticks(3), false);
+            Assert(r.GetSnapshot().Stale == 1 && r.GetSnapshot().Received == 1, "Startup stale guard or wrap handling lost");
+        });
+        Test("Player startup exceptions fault the receiver and detach the failed output", () => {
+            using var r = new WifiReceiver(log, 0, 0, 80, 200, "test");
+            var o = new AudioOutput(log);
+            var player = new FailingPlayer();
+            Set(o, "output", player);
+            o.Add(Signal(80), 0, 80 * 192);
+            Set(r, "output", o); Set(r, "state", SinkState.LinkReady);
+            Call(r, "ProcessLocked", Ticks(1));
+            Assert(player.PlayCalls == 1 && !(bool)Get(r, "playing"), "Failed player marked playing");
+            Assert(r.GetSnapshot().State == SinkState.Faulted && Get(r, "output") == null
+                && ReferenceEquals(Get(r, "pendingRelease"), o), "Failed output retained or fault hidden");
+            Call(r, "ProcessLocked", Ticks(2));
+            Assert(player.PlayCalls == 1, "Faulted player unexpectedly retried");
+            o.Dispose();
+        });
         Test("0,2,1 is reordered without concealment", () => {
             using var r = new WifiReceiver(log, 45678, 45679, 80, 200, "test");
             Packet(r, 0, Ticks(1)); Call(r, "FlushReorderLocked", Ticks(1));
@@ -222,7 +269,182 @@ class Program
             Send(b, WifiTransport.TypeAudio);
             Wait(() => r.GetSnapshot().Remote == bId && r.GetSnapshot().Received == 1 && r.GetSnapshot().BufferMs == 5, "B audio not independently buffered");
         });
+        Test("BAS2 microphone golden header is isolated from legacy playback", () => {
+            var pcm = Signal(5);
+            var packet = DualStreamTransport.Build(1, 0x12345678, uint.MaxValue, 0x80000001, pcm, true);
+            byte[] expected = { 0x42,0x41,0x53,0x32,1,1,0,0,0x78,0x56,0x34,0x12,255,255,255,255,1,0,0,128 };
+            Assert(packet.Take(20).SequenceEqual(expected), "Wire format mismatch");
+            Assert(DualStreamTransport.TryRead(packet, packet.Length, out var h) && h.Stream == 1 && h.Sequence == uint.MaxValue, "Decode failed");
+            Assert(!WifiTransport.TryReadHeader(packet, packet.Length, out _), "Legacy receiver accepts microphone");
+            packet[6] = 1;
+            Assert(!DualStreamTransport.TryRead(packet, packet.Length, out _), "Reserved field accepted");
+        });
+        byte[] Constant(short value) {
+            var data = new byte[20 * 192];
+            for (int i = 0; i < data.Length; i += 2) { data[i] = (byte)value; data[i + 1] = (byte)(value >> 8); }
+            return data;
+        }
+        Test("Media and mic remain isolated; sharing never changes headphones", () => {
+            var router = new PhoneAudioRouter(); var media = Constant(2000); var mic = Constant(3000);
+            router.AddMedia(media, 0, media.Length); router.AddMicrophone(mic, 0, mic.Length);
+            var a = new byte[media.Length]; var b = new byte[mic.Length];
+            router.Headphones.Read(a, 0, a.Length); router.VirtualMicrophone.Read(b, 0, b.Length);
+            Assert(a.SequenceEqual(media) && b.SequenceEqual(mic), "Streams leaked across outputs");
+            router.ShareMedia = true;
+            router.AddMedia(media, 0, media.Length); router.AddMicrophone(mic, 0, mic.Length);
+            router.Headphones.Read(a, 0, a.Length); router.VirtualMicrophone.Read(b, 0, b.Length);
+            Assert(a.SequenceEqual(media) && b.SequenceEqual(Constant(5000)), "Sharing interrupted media or lost mix");
+        });
+        Test("Share toggle clears queued media without discarding headphone audio", () => {
+            var router = new PhoneAudioRouter { ShareMedia = true }; var media = Constant(2000);
+            router.AddMedia(media, 0, media.Length); router.ShareMedia = false; router.ShareMedia = true;
+            var a = new byte[media.Length]; var b = new byte[media.Length];
+            router.Headphones.Read(a, 0, a.Length); router.VirtualMicrophone.Read(b, 0, b.Length);
+            Assert(a.SequenceEqual(media) && b.All(v => v == 0), "Toggle leaked stale music or cleared headphones");
+        });
+        Test("Virtual microphone mix saturates instead of integer wrap", () => {
+            var router = new PhoneAudioRouter { ShareMedia = true }; var loud = Constant(30000);
+            router.AddMedia(loud, 0, loud.Length); router.AddMicrophone(loud, 0, loud.Length);
+            var actual = new byte[loud.Length]; router.VirtualMicrophone.Read(actual, 0, actual.Length);
+            Assert(actual.SequenceEqual(Constant(short.MaxValue)), "Clipping wrapped PCM sign");
+        });
+        Test("Microphone mute and volume change only the virtual mic, not headphones or shared music", () => {
+            var router=new PhoneAudioRouter { ShareMedia=true, MicrophoneVolume=50 };
+            var media=Constant(2000); var mic=Constant(6000); var a=new byte[media.Length]; var b=new byte[mic.Length];
+            router.AddMedia(media,0,media.Length); router.AddMicrophone(mic,0,mic.Length);
+            router.Headphones.Read(a,0,a.Length); router.VirtualMicrophone.Read(b,0,b.Length);
+            Assert(a.SequenceEqual(media)&&b.SequenceEqual(Constant(5000)),"Gain applied to wrong source or more than once");
+            router.MicrophoneMuted=true;
+            router.AddMedia(media,0,media.Length); router.AddMicrophone(mic,0,mic.Length);
+            router.Headphones.Read(a,0,a.Length); router.VirtualMicrophone.Read(b,0,b.Length);
+            Assert(a.SequenceEqual(media)&&b.SequenceEqual(media),"Mute removed shared media or leaked microphone");
+            router.MicrophoneMuted=false; router.ShareMedia=false; router.Clear();
+            router.AddMicrophone(mic,0,mic.Length); router.VirtualMicrophone.Read(b,0,b.Length);
+            Assert(b.SequenceEqual(Constant(3000)),"Unmute failed or gain applied twice");
+        });
+        Test("PC authoritative microphone revisions reject duplicate and conflicting phone requests", () => {
+            var state=new MicrophoneState(); var first=state.Current;
+            Assert(state.ApplyRemote(1,first.Revision,true,40),"Phone request rejected");
+            var applied=state.Current;
+            Assert(applied.Muted&&applied.Volume==40&&applied.Acknowledged==1,"Phone state lost");
+            Assert(!state.ApplyRemote(1,applied.Revision,false,100),"Duplicate request replayed");
+            state.SetLocal(false,70,true); var pc=state.Current;
+            Assert(!state.ApplyRemote(2,applied.Revision,false,5),"Stale phone request overwrote new PC state");
+            Assert(state.Current.Volume==70&&state.Current.Acknowledged==2,"Conflict ACK or PC state lost");
+            Assert(state.ApplyRemote(3,applied.Revision,true,5),"A new mute request was lost to a volume conflict");
+            Assert(state.Current.Muted&&state.Current.Volume==70,"Mute conflict changed the newer PC volume");
+            Assert(state.ApplyRemote(4,state.Current.Revision,true,25),"Current request rejected");
+            Assert(state.Current.Volume==25&&state.Current.Share,"Remote control changed media sharing");
+            Assert(state.ApplyRemote(5,state.Current.Revision,false,55,2),"Volume-only update rejected");
+            Assert(state.Current.Muted&&state.Current.Volume==55,"Volume update unexpectedly unmuted mic");
+            Assert(state.ApplyRemote(6,state.Current.Revision,false,100,1),"Mute-only update rejected");
+            Assert(!state.Current.Muted&&state.Current.Volume==55,"Mute update overwrote volume");
+            state.BeginSession(); Assert(state.Current.Acknowledged==0&&state.Current.Volume==55,"Reconnect lost saved controls");
+        });
+        Test("Dual microphone packets cannot enter another source or session", () => {
+            using var receiver=new WifiReceiver(log,0,0,80,200,"test");
+            var from=new IPEndPoint(IPAddress.Loopback,31001); var other=new IPEndPoint(IPAddress.Loopback,31002);
+            var flags=new byte[]{3,0,0,0};
+            var start=WifiTransport.BuildPacket(10,0,123,0,flags);
+            Call(receiver,"HandlePacket",start,start.Length,from,Ticks(1),false);
+            var valid=DualStreamTransport.Build(1,123,0,5000,Signal(5));
+            Call(receiver,"HandlePacket",valid,valid.Length,other,Ticks(2),false);
+            var stale=DualStreamTransport.Build(1,124,0,5000,Signal(5));
+            Call(receiver,"HandlePacket",stale,stale.Length,from,Ticks(3),false);
+            Assert(receiver.GetSnapshot().Received==0,"Foreign microphone accepted");
+            Call(receiver,"HandlePacket",valid,valid.Length,from,Ticks(4),false);
+            Assert(receiver.GetSnapshot().DualMode&&receiver.GetSnapshot().Received==1,"Selected microphone not enqueued");
+            var stop=WifiTransport.BuildPacket(WifiTransport.TypeStop,0,124,0,null);
+            Call(receiver,"HandlePacket",stop,stop.Length,from,Ticks(5),false);
+            Assert(receiver.GetSnapshot().DualMode,"Old STOP terminated current microphone");
+            stop=WifiTransport.BuildPacket(WifiTransport.TypeStop,0,123,0,null);
+            Call(receiver,"HandlePacket",stop,stop.Length,from,Ticks(6),false);
+            Assert(!receiver.GetSnapshot().DualMode,"Current STOP did not end microphone");
+        });
+        Test("Independent dual-stream reorder waits for missing packets and handles wrap", () => {
+            var stream=new OrderedAudioStream(); var got=new List<byte[]>();
+            var one=Constant(1); var two=Constant(2); var three=Constant(3);
+            stream.Add(uint.MaxValue,one); stream.Drain(Ticks(1),got.Add);
+            stream.Add(1,three); stream.Drain(Ticks(2),got.Add);
+            Assert(got.Count==1,"Reorder deadline ignored");
+            stream.Add(0,two); stream.Drain(Ticks(3),got.Add);
+            Assert(got.Count==3&&got[0].SequenceEqual(one)&&got[1].SequenceEqual(two)&&got[2].SequenceEqual(three),"Wrapped stream reordered incorrectly");
+        });
+        Test("Virtual mic selection excludes physical and capture endpoints", () => {
+            Assert(!EndpointRegistry.IsCableRender(new EndpointInfo { IsRender=true,IsActive=true,IsVirtual=true,Name="Nahimic speakers" }),"Physical DSP endpoint mistaken for microphone cable");
+            Assert(!EndpointRegistry.IsCableRender(new EndpointInfo { IsRender=false,IsActive=true,Name="CABLE Output (VB-Audio Virtual Cable)" }),"Capture endpoint selected for rendering");
+            Assert(EndpointRegistry.IsCableRender(new EndpointInfo { IsRender=true,IsActive=true,Name="CABLE Input (VB-Audio Virtual Cable)" }),"Official cable input not found");
+        });
+        Test("Bluetooth ADPCM cross-language vectors survive packet drops and keep streams isolated", () => {
+            using var fixture=JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory,"bluetooth-adpcm.json")));
+            foreach(var vector in fixture.RootElement.EnumerateArray().Reverse()) {
+                byte[] encoded=Convert.FromHexString(vector.GetProperty("encoded").GetString());
+                byte[] expected=Convert.FromHexString(vector.GetProperty("decoded").GetString());
+                Assert(expected.SequenceEqual(BluetoothAudioCodec.Decode(encoded)),"ADPCM mismatch");
+                encoded[26]=89;
+                try { BluetoothAudioCodec.Decode(encoded); throw new Exception("Invalid predictor accepted"); } catch(InvalidDataException) { }
+            }
+        });
+        Test("Bluetooth framing handles fragmented and coalesced frames and rejects truncation", () => {
+            var packet=WifiTransport.BuildPacket(11,0,7,0,new byte[24]);
+            var frame=BluetoothAudioCodec.Frame(packet);
+            using var combined=new FragmentedStream(frame.Concat(frame).ToArray());
+            Assert(packet.SequenceEqual(BluetoothAudioCodec.Read(combined)),"First frame");
+            Assert(packet.SequenceEqual(BluetoothAudioCodec.Read(combined)),"Second frame");
+            using var truncated=new MemoryStream(frame.Take(frame.Length-1).ToArray());
+            try { BluetoothAudioCodec.Read(truncated); throw new Exception("Truncated frame accepted"); } catch(EndOfStreamException) { }
+            frame[0]=255; frame[1]=255;
+            try { BluetoothAudioCodec.Read(new MemoryStream(frame)); throw new Exception("Oversized frame accepted"); } catch(InvalidDataException) { }
+        });
+        Test("Bluetooth local receiver opens no UDP sockets and disables duplicate headphone routing", () => {
+            using var engine=new WifiReceiver(log,45678,45679,160,400,"Bluetooth");
+            var outgoing=new System.Collections.Concurrent.ConcurrentQueue<byte[]>();
+            engine.StartLocalTransport(outgoing.Enqueue);
+            engine.ReceiveTransportPacket(WifiTransport.BuildPacket(10,0,123,0,BitConverter.GetBytes(3U)));
+            Assert(Get(engine,"controlSocket")==null && Get(engine,"audioSocket")==null,"UDP opened");
+            var session=Get(engine,"dual");
+            Assert(session!=null && !(bool)Get(session,"routeMediaToHeadphones"),"Duplicate headphones");
+            var state=engine.GetSnapshot();
+            Assert(state.DualMode,"No dual session");
+            Assert(outgoing.Any(p=>p[4]==11),"No control ACK on RFCOMM");
+            engine.Stop();
+            Assert(Get(engine,"dual")==null,"Session survived disconnect");
+        });
+        Test("Bluetooth shutdown timeout cannot start a new generation before the old worker exits", () => {
+            using var releaseOld = new ManualResetEventSlim();
+            using var receiver = new BluetoothMicrophoneReceiver(log, new MicrophoneState());
+            var oldWorker = new Thread(() => releaseOld.Wait()) { IsBackground = true };
+            Set(receiver, "worker", oldWorker);
+            oldWorker.Start();
+            Thread observedWorker = null;
+            try {
+                receiver.Stop(); // Exercise the real bounded Join timeout.
+                // A broken Start must not bind a real Bluetooth service in this regression.
+                // Hold the receiver lock until any newly created worker is marked stopped.
+                lock (Get(receiver, "sync")) {
+                    receiver.Start();
+                    observedWorker = (Thread)Get(receiver, "worker");
+                    Set(receiver, "running", false);
+                }
+                if (observedWorker != oldWorker) observedWorker.Join(1000);
+                Assert(ReferenceEquals(observedWorker, oldWorker), "New Bluetooth worker overlapped a timed-out shutdown");
+                Assert(receiver.Status.Contains("关闭"), "Shutdown still pending but no recovery hint was shown");
+            } finally { releaseOld.Set(); oldWorker.Join(1000); }
+        });
         Console.WriteLine($"{passed} tests passed");
+    }
+    sealed class FailingPlayer : IWavePlayer
+    {
+        public int PlayCalls;
+        public PlaybackState PlaybackState => PlaybackState.Stopped;
+        public WaveFormat OutputWaveFormat => new WaveFormat(48000, 16, 2);
+        public float Volume { get; set; }
+        public event EventHandler<StoppedEventArgs> PlaybackStopped { add { } remove { } }
+        public void Init(IWaveProvider provider) { }
+        public void Play() { PlayCalls++; throw new InvalidOperationException("Simulated device startup failure"); }
+        public void Pause() { }
+        public void Stop() { }
+        public void Dispose() { }
     }
     static void Record(int seconds, string path)
     {
@@ -241,4 +463,11 @@ class Program
         Console.WriteLine(JsonSerializer.Serialize(new { device = device.FriendlyName, rate = capture.WaveFormat.SampleRate,
             bits = capture.WaveFormat.BitsPerSample, channels = capture.WaveFormat.Channels, format = capture.WaveFormat.ToString(), seconds, bytes = writer.Length, path }));
     }
+}
+
+sealed class FragmentedStream : MemoryStream
+{
+    public FragmentedStream(byte[] bytes) : base(bytes) { }
+    public override int Read(Span<byte> buffer) => base.Read(buffer.Slice(0,Math.Min(buffer.Length,3)));
+    public override int Read(byte[] buffer,int offset,int count) => base.Read(buffer,offset,Math.Min(count,3));
 }

@@ -79,7 +79,16 @@ Release 构建通过，仅既有 NAudio/COM 裁剪警告；原有 19 项音频/�
 
 核验：Release 构建通过。正在运行的开发目录 exe 与正式发布 exe 均只有新蓝色图标资源；加入通知后，已打开的任务管理器对开发路径仍保留绿点。关闭本程序并从正式发布入口 `artifacts/BlueAudioSink-0.1.0.exe` 启动，实际核验任务管理器条目已显示蓝色音频图标，确认路径缓存参与了问题。当前保留正式发布入口运行。未删除图标缓存文件、未重启 Explorer，未强制结束任务管理器。窗口与 Shell 图标刷新机制已补齐；未取得独立任务栏截图，不将标题栏/任务管理器核验写成任务栏视觉验收。
 
-## 双端作者署名（实施规格）
-电脑所有页面底部以现有小字号显示“开发作者：liubaiqing”；临时操作反馈优先，反馈结束后恢复署名。手机在底部统计栏下显示同样署名，使用 bodySmall 和次要文字颜色，不增加操作入口。Android 使用独立发布密钥签名 Release，密钥和密码仅在本地保存，源码提供无密码示例；APK 版本统一为 0.1.0，versionCode 递增为 2。
+## 双端关于（0.3.1 Candidate，取代常驻作者署名）
 
-核验：Windows Release 发布成功，仅保留已有 NAudio/COM 裁剪警告；实际启动正式入口，Wi-Fi 页面底部署名清晰可见，手机音频恢复接收。Android assembleRelease（含 lintVital）成功，apksigner 验证 v2 签名通过，证书主体为 BlueAudioSink / liubaiqing；aapt 确认 versionCode=2、versionName=0.1.0，无 application-debuggable 标记，APK 含作者文字资源。本轮未在实体手机卸载旧测试版或安装新签名版，手机署名未作实体屏幕视觉验收。英文 README 作为默认首页，保留中文版，文档本地链接均有效。密钥、密码、Kotlin 缓存已排除在 Git 外。原测试签名安装需卸载后安装正式签名版。
+当前正式版本为双端 0.3.3（Android versionCode=7），保留后述关于与按钮行为；以下 Candidate 信息仅作开发历史。见 [正式发布记录](17-release-0.3.3.md)。
+
+0.3.2 延续关于入口与仓库链接，双端版本为 `0.3.2-candidate`，Android versionCode=6。Android 发送按钮固定在滚动内容之外；蓝牙的媒体副本开关单独管理、默认关闭，麦克风默认开启；上次成功目标只在仍配对时预选，不自动采集。当前规则以 [0.3.2 说明](15-bluetooth-capture-and-memory.md)为准，以下 0.3.1 信息保留为变更记录。
+
+两端不再显示“开发作者”底部署名。Windows 右下角常驻“关于”入口，使用现有原生窗口展示版本、原作者仓库 `https://github.com/liubaiqing/BlueAudioSink`、当前仓库 `https://github.com/LunageZz/BlueAudioSink` 及 MIT 版权声明。两个仓库按钮调用系统默认浏览器；“返回”或 Esc 回到原页面，支持 Tab/Enter 键盘操作，不停止当前接收。
+
+Android 标题栏右侧显示“关于”，打开可滚动弹窗，包含相同信息及两个可点击链接；返回键、点击外部或“关闭”关闭弹窗，不改变采集状态。底部统计栏只保留指标。
+
+Windows/Android 版本统一为 `0.3.1-candidate`，Android versionCode 为 5。Release 签名由本地 `signing.properties` 与私有密钥提供，不入库，不随公开安装包分发。仓库默认中文 README，英文位于 `README.en.md`；旧截图明确标为历史界面。发布包需附带 MIT LICENSE。
+
+验收：检查版本、入口、两个链接、键盘/返回行为和署名移除；分别记录 Windows 发布构建、Android Release/单元测试/lint/签名校验结果。以本次构建记录为准，不沿用旧版署名或发布构建的验收结论。实体手机音频验收独立记录。

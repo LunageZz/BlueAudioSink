@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.AudioTimestamp
+import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.os.Process
 import android.os.SystemClock
@@ -24,13 +25,21 @@ import kotlin.math.abs
  * 由采集线程在读到整包时按「读取完成时刻 − 5 ms」估算后随包携带。
  */
 class PcmRecorder(
-    private val projection: MediaProjection,
+    private val projection: MediaProjection?,
+    private val microphone: Boolean = false,
     private val tier: BufferTier,
     private val onPacket: (buffer: ByteArray, length: Int, timestampUs: Int, discontinuity: Boolean) -> Unit,
     private val onError: (code: Int) -> Unit,
 ) {
 
     companion object {
+        internal fun monoToStereo(input: ByteArray, output: ByteArray) {
+            require(input.size == PacketCodec.AUDIO_PAYLOAD_SIZE / 2 && output.size == PacketCodec.AUDIO_PAYLOAD_SIZE)
+            for (frame in 0 until PacketCodec.FRAMES_PER_PACKET) {
+                output[frame * 4] = input[frame * 2]; output[frame * 4 + 1] = input[frame * 2 + 1]
+                output[frame * 4 + 2] = input[frame * 2]; output[frame * 4 + 3] = input[frame * 2 + 1]
+            }
+        }
         const val ERROR_BUILD = 1
         const val ERROR_START = 2
         const val ERROR_READ = 3
@@ -81,8 +90,8 @@ class PcmRecorder(
     fun start(): Boolean {
         if (running) return true
 
-        val captureConfig = try {
-            AudioPlaybackCaptureConfiguration.Builder(projection)
+        val captureConfig = if (microphone) null else try {
+            AudioPlaybackCaptureConfiguration.Builder(requireNotNull(projection))
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                 .addMatchingUsage(AudioAttributes.USAGE_GAME)
                 .build()
@@ -92,15 +101,16 @@ class PcmRecorder(
             return false
         }
 
+        val inputChannels = if (microphone) AudioFormat.CHANNEL_IN_MONO else AudioFormat.CHANNEL_IN_STEREO
         val format = AudioFormat.Builder()
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
             .setSampleRate(PacketCodec.SAMPLE_RATE)
-            .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+            .setChannelMask(inputChannels)
             .build()
 
         val minBuffer = AudioRecord.getMinBufferSize(
             PacketCodec.SAMPLE_RATE,
-            AudioFormat.CHANNEL_IN_STEREO,
+            inputChannels,
             AudioFormat.ENCODING_PCM_16BIT,
         )
         // AudioRecord 内部缓冲取 2 倍 minBufferSize（至少 4 包），
@@ -112,11 +122,10 @@ class PcmRecorder(
         }
 
         val recorder = try {
-            AudioRecord.Builder()
-                .setAudioFormat(format)
-                .setBufferSizeInBytes(bufferBytes)
-                .setAudioPlaybackCaptureConfig(captureConfig)
-                .build()
+            val builder = AudioRecord.Builder().setAudioFormat(format).setBufferSizeInBytes(bufferBytes)
+            if (microphone) builder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            else builder.setAudioPlaybackCaptureConfig(requireNotNull(captureConfig))
+            builder.build()
         } catch (e: SecurityException) {
             Log.w(TAG, "AudioRecord permission denied", e)
             onError(ERROR_PERMISSION)
@@ -162,31 +171,26 @@ class PcmRecorder(
 
     fun stop() {
         running = false
-        captureThread?.interrupt()
-        captureThread = null
-        sendThread?.interrupt()
-        sendThread = null
-        record?.let {
-            try {
-                it.stop()
-            } catch (_: Exception) {
-            }
-            try {
-                it.release()
-            } catch (_: Exception) {
-            }
+        captureThread?.interrupt(); sendThread?.interrupt()
+        synchronized(lock) { lock.notifyAll() }
+        try { record?.stop() } catch (_: Exception) { }
+        for (thread in listOf(captureThread, sendThread)) {
+            if (thread != Thread.currentThread()) try { thread?.join(1000) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
         }
-        record = null
+        try { record?.release() } catch (_: Exception) { }
+        captureThread = null; sendThread = null; record = null
     }
 
     // ---------------------------------------------------------------- 采集
 
     private fun captureLoop(recorder: AudioRecord) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-        val chunk = ByteArray(packetBytes)
+        val inputBytes = if (microphone) packetBytes / 2 else packetBytes
+        val chunk = ByteArray(inputBytes)
+        val stereo = ByteArray(packetBytes)
         var accumulated = 0
         while (running) {
-            val requested = packetBytes - accumulated
+            val requested = inputBytes - accumulated
             val read = try {
                 recorder.read(chunk, accumulated, requested, AudioRecord.READ_BLOCKING)
             } catch (e: Exception) {
@@ -206,13 +210,16 @@ class PcmRecorder(
             if (read == 0) continue
             if (read < requested) shortReads++
             accumulated += read
-            framesRead += read.toLong() / (PacketCodec.CHANNEL_COUNT * PacketCodec.BYTES_PER_SAMPLE)
+            framesRead += read.toLong() / ((if (microphone) 1 else PacketCodec.CHANNEL_COUNT) * PacketCodec.BYTES_PER_SAMPLE)
             // A short read is not missing audio. Accumulate the rest without inserting zeros.
-            if (accumulated < packetBytes) continue
+            if (accumulated < inputBytes) continue
             accumulated = 0
 
             // First captured frame, in the same BOOTTIME basis used for packet scheduling.
             val captureTsUs = firstFrameCaptureUs(recorder, framesRead - PacketCodec.FRAMES_PER_PACKET)
+            if (microphone) {
+                monoToStereo(chunk, stereo)
+            }
             synchronized(lock) {
                 if (fill == capacity) {
                     // 环满：丢最旧一包保低延迟，并标记内容不连续
@@ -221,7 +228,7 @@ class PcmRecorder(
                     sourceOverflows++
                     overflowGap = true
                 }
-                System.arraycopy(chunk, 0, ring, writeIndex * packetBytes, packetBytes)
+                System.arraycopy(if (microphone) stereo else chunk, 0, ring, writeIndex * packetBytes, packetBytes)
                 ringTimestamps[writeIndex] = captureTsUs
                 writeIndex = (writeIndex + 1) % capacity
                 fill++

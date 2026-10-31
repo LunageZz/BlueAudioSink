@@ -18,10 +18,8 @@ import com.blueaudiosink.sender.ui.SenderScreen
 /**
  * 唯一 Activity。
  *
- * 开始发送的三步（顺序不可换）：
- * 1. 申请运行时权限（录音、通知）；
- * 2. 弹系统录屏授权对话框（每次都必须由用户确认）；
- * 3. 带着授权结果启动 mediaProjection 类型的前台服务。
+ * 开始发送先申请录音/通知权限。只传麦克风时直接启动 microphone 前台服务；
+ * 只有主动采集媒体副本时才申请 MediaProjection，并启动对应前台服务类型。
  */
 class MainActivity : ComponentActivity() {
 
@@ -39,6 +37,18 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    private val bluetoothPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) LinkController.setBluetooth(true)
+            else LinkController.postMessage("需要附近设备权限才能使用蓝牙麦克风")
+        }
+    private fun selectTransport(bluetooth: Boolean) {
+        if (bluetooth && Build.VERSION.SDK_INT >= 31 &&
+            ContextCompat.checkSelfPermission(this,android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            bluetoothPermissionLauncher.launch(android.Manifest.permission.BLUETOOTH_CONNECT)
+        else LinkController.setBluetooth(bluetooth)
+    }
+
     private val consentLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             pendingStart = false
@@ -51,6 +61,8 @@ class MainActivity : ComponentActivity() {
                     resultData = data,
                     tierName = state.tier.name,
                     deviceName = deviceName(),
+                    mediaEnabled = state.captureMedia,
+                    microphoneEnabled = state.microphoneEnabled,
                 )
                 ContextCompat.startForegroundService(this, intent)
             } else {
@@ -68,6 +80,8 @@ class MainActivity : ComponentActivity() {
                 SenderScreen(
                     state = state,
                     onStart = ::handleStart,
+                    onTransportChange = ::selectTransport,
+                    onBluetoothSettings = { startActivity(android.content.Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)) },
                     onStop = {
                         ContextCompat.startForegroundService(
                             this,
@@ -112,6 +126,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestConsent() {
+        val state = LinkController.state.value
+        if (!state.captureMedia) {
+            pendingStart = false
+            if (!state.microphoneEnabled) { LinkController.postMessage("请至少选择一路音频"); return }
+            ContextCompat.startForegroundService(this, AudioCaptureService.startIntent(
+                this, 0, null, state.tier.name, deviceName(), false, true))
+            return
+        }
         val intent = MediaProjectionHelper.createConsentIntent(this)
         if (intent == null) {
             pendingStart = false

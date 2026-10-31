@@ -14,6 +14,10 @@ namespace SinkLite.Core
     /// </summary>
     internal sealed class WifiSnapshot
     {
+        public bool DualMode { get; set; }
+        public bool VirtualMicrophoneReady { get; set; }
+        public string MicrophoneStatus { get; set; }
+
         public bool Enabled { get; set; }
 
         public SinkState State { get; set; } = SinkState.Idle;
@@ -85,6 +89,7 @@ namespace SinkLite.Core
     internal sealed class WifiController : IDisposable
     {
         private readonly Log log;
+        public MicrophoneState Microphone { get; } = new MicrophoneState();
         private readonly object sync = new object();
         private readonly int audioPort;
         private int bufferBaseMs;
@@ -105,6 +110,8 @@ namespace SinkLite.Core
         public WifiController(Log log, int audioPort, int bufferBaseMs, int bufferMaxMs)
         {
             this.log = log;
+            var saved = Settings.Load();
+            Microphone.SetLocal(saved.MicrophoneMuted, saved.MicrophoneVolume, saved.SharePhoneMedia);
             this.audioPort = audioPort;
             this.bufferBaseMs = bufferBaseMs;
             this.bufferMaxMs = bufferMaxMs;
@@ -148,7 +155,7 @@ namespace SinkLite.Core
                     audioPort,
                     bufferBaseMs,
                     bufferMaxMs,
-                    deviceName);
+                    deviceName, Microphone);
 
                 if (!created.Start())
                 {

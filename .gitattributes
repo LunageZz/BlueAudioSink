@@ -1,0 +1,2 @@
+# Preserve the official .NET license/notice files byte-for-byte, including upstream whitespace.
+licenses/Dotnet-*.txt -text -whitespace

@@ -21,7 +21,7 @@ namespace SinkLite.Core
         private readonly PlayoutBuffer buffer;
         private readonly byte[] silence;
         private readonly byte[] fade;
-        private WasapiOut output;
+        private IWavePlayer output;
         private bool disposed;
         public string OutputName { get; private set; }
         public bool IsPlaying { get { lock (sync) { return output != null && output.PlaybackState == PlaybackState.Playing; } } }
@@ -120,13 +120,13 @@ namespace SinkLite.Core
         }
 
         /// <summary>开始消费缓冲。调用前应已预填至少一个目标缓冲。</summary>
-        public void Play()
+        public bool Play()
         {
             lock (sync)
             {
                 if (output == null)
                 {
-                    return;
+                    return false;
                 }
 
                 try
@@ -135,11 +135,13 @@ namespace SinkLite.Core
                     {
                         output.Play();
                     }
+                    return output.PlaybackState == PlaybackState.Playing;
                 }
                 catch (Exception ex)
                 {
                     // 播放失败不抛出到接收线程，交给上层按故障处理。
                     log.Error("Player.Fault", ("code", "PlayFailed"), ("detail", ex.Message));
+                    return false;
                 }
             }
         }
@@ -215,7 +217,7 @@ namespace SinkLite.Core
         /// <summary>停止并释放输出端点；缓冲一并清空。</summary>
         public void Stop()
         {
-            WasapiOut current = null;
+            IWavePlayer current = null;
             lock (sync)
             {
                 current = output;

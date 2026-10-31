@@ -1,6 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>disable</Nullable></PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../src/SinkLite/Core/BluetoothAudioCodec.cs" Link="BluetoothAudioCodec.cs" />
+    <Compile Include="../../src/SinkLite/Core/BluetoothMicrophoneReceiver.cs" Link="BluetoothMicrophoneReceiver.cs" />
+    <Compile Include="../../src/SinkLite/Platform/RfcommListener.cs" Link="RfcommListener.cs" />
+    <None Include="../../testdata/bluetooth-adpcm.json" Link="bluetooth-adpcm.json" CopyToOutputDirectory="PreserveNewest" />
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <Compile Include="../../src/SinkLite/Core/PlayoutBuffer.cs" Link="PlayoutBuffer.cs" />
     <Compile Include="../../src/SinkLite/Core/AudioOutput.cs" Link="AudioOutput.cs" />
@@ -10,5 +14,11 @@
     <Compile Include="../../src/SinkLite/Ui/ConnectionPresentation.cs" Link="ConnectionPresentation.cs" />
     <Compile Include="../../src/SinkLite/Core/Models.cs" Link="Models.cs" />
     <Compile Include="../../src/SinkLite/Platform/Log.cs" Link="Log.cs" />
+    <Compile Include="../../src/SinkLite/Core/DualStreamTransport.cs" Link="DualStreamTransport.cs" />
+    <Compile Include="../../src/SinkLite/Core/PhoneAudioRouter.cs" Link="PhoneAudioRouter.cs" />
+    <Compile Include="../../src/SinkLite/Core/MicrophoneState.cs" Link="MicrophoneState.cs" />
+    <Compile Include="../../src/SinkLite/Core/DualStreamSession.cs" Link="DualStreamSession.cs" />
+    <Compile Include="../../src/SinkLite/Platform/Settings.cs" Link="Settings.cs" />
+    <Compile Include="../../src/SinkLite/Platform/EndpointRegistry.cs" Link="EndpointRegistry.cs" />
   </ItemGroup>
 </Project>

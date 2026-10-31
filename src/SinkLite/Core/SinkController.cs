@@ -12,7 +12,7 @@ namespace SinkLite.Core
 {
     /// <summary>
     /// 四段状态机。核心设计针对原实现的两个已观测故障：
-    ///   1) 连接失败：连接对象持久化，绝不为重试而销毁重建；失败按可重试性分类并退避。
+    ///   1) 自动重试复用连接对象并退避；用户手动恢复时显式释放并重建媒体连接。
     ///   2) 连上没声音：显式区分控制层 / 链路层 / 音频层，界面不再把控制层成功当成功。
     /// 所有状态变更只在主循环线程发生，外部命令经队列串行化。
     /// </summary>
@@ -111,9 +111,7 @@ namespace SinkLite.Core
             routeLockAttempts = 0;
             lastRouteLock = DateTime.MinValue;
 
-            Platform.Settings settings = Platform.Settings.Load();
-            settings.PreferredRenderId = endpointId ?? string.Empty;
-            settings.Save();
+            Platform.Settings.Update(settings => settings.PreferredRenderId = endpointId ?? string.Empty);
 
             if (route == null || string.IsNullOrEmpty(endpointId))
             {
@@ -166,7 +164,7 @@ namespace SinkLite.Core
         {
             loopCancellation = new CancellationTokenSource();
             loopTask = Task.Run(() => RunLoopAsync(loopCancellation.Token));
-            log.Info("App.Start", ("version", "0.1.0"));
+            log.Info("App.Start", ("version", AppInfo.Version));
         }
 
         public void RequestConnect(string deviceId)
@@ -177,6 +175,12 @@ namespace SinkLite.Core
         public void RequestDisconnect()
         {
             commands.Writer.TryWrite(new Command { Kind = "disconnect" });
+        }
+
+        /// <summary>Explicit user recovery rebuilds A2DP; automatic retries still reuse healthy objects.</summary>
+        public void RequestReconnectMedia(string deviceId)
+        {
+            commands.Writer.TryWrite(new Command { Kind = "reconnect-media", DeviceId = deviceId });
         }
 
         public void RequestRefreshDevices()
@@ -240,6 +244,14 @@ namespace SinkLite.Core
             {
                 switch (command.Kind)
                 {
+                    case "reconnect-media": {
+                        // A successful OpenAsync on an existing object did not restore the observed silent route.
+                        // Match the proven disconnect/connect recovery, without touching the RFCOMM microphone.
+                        string targetId = string.IsNullOrEmpty(command.DeviceId) ? Current.DeviceId : command.DeviceId;
+                        await ReleaseAsync("manual media reconnect");
+                        await HandleConnectAsync(targetId);
+                        break;
+                    }
                     case "connect":
                         await HandleConnectAsync(command.DeviceId);
                         break;

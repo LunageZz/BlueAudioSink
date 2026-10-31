@@ -8,7 +8,19 @@ enum class LinkPhase { IDLE, CONNECTED, STREAMING }
 
 /** 单页 UI 的全部状态（由 [LinkController] 唯一持有）。 */
 data class SenderUiState(
+    val bluetooth: Boolean = false,
+    val pairedDevices: List<DiscoveredDevice> = emptyList(),
+    val lastBluetoothAddress: String? = null,
     val phase: LinkPhase = LinkPhase.IDLE,
+    val microphoneEnabled: Boolean = false,
+    val mediaEnabled: Boolean = true,
+    /** Optional media copy for the virtual mic; native A2DP playback is independent. */
+    val bluetoothMediaCopyEnabled: Boolean = false,
+    val microphoneMuted: Boolean = false,
+    val microphoneVolume: Int = 100,
+    val microphoneSynced: Boolean = false,
+    val virtualMicrophoneReady: Boolean = false,
+    val shareMedia: Boolean = false,
     val targetName: String? = null,
     val targetIp: String? = null,
     val targetPort: Int = 45_679,
@@ -23,4 +35,6 @@ data class SenderUiState(
     val tier: BufferTier = BufferTier.BALANCED,
     val message: String? = null,
     val messageToken: Long = 0,
-)
+) {
+    val captureMedia: Boolean get() = if (bluetooth) bluetoothMediaCopyEnabled else mediaEnabled
+}

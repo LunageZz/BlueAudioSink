@@ -51,5 +51,14 @@
     <string name="error_recorder_build">无法创建音频采集器</string>
     <string name="error_recorder_start">音频采集启动失败</string>
     <string name="error_recorder_read">音频采集中断</string>
-    <string name="developer_credit">开发作者：liubaiqing</string>
+    <!-- 关于：统一集中显示项目来源，主界面不常驻作者署名。 -->
+    <string name="action_about">关于</string>
+    <string name="action_close">关闭</string>
+    <string name="about_title">关于 BlueAudioSink</string>
+    <string name="about_version">版本：%1$s</string>
+    <string name="about_original">原作者仓库</string>
+    <string name="about_fork">当前项目仓库</string>
+    <string name="about_original_url" translatable="false">https://github.com/liubaiqing/BlueAudioSink</string>
+    <string name="about_fork_url" translatable="false">https://github.com/LunageZz/BlueAudioSink</string>
+    <string name="about_license">MIT License · Copyright (c) 2026 liubaiqing</string>
 </resources>

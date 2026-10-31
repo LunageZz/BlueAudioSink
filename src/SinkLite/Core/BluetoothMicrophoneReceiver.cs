@@ -25,7 +25,11 @@ namespace SinkLite.Core
         public void Start()
         {
             lock(sync) {
-                if(running) return; running=true;
+                if(running) return;
+                // Stop has a bounded wait. An old worker must finish all finally blocks
+                // before another worker can publish listener/client/receiver fields.
+                if(worker!=null && worker.IsAlive) { status="上次蓝牙麦克风仍在关闭，请稍后点击连接重试"; return; }
+                running=true;
                 worker=new Thread(Run) { IsBackground=true,Name="BluetoothMicrophone" }; worker.Start();
             }
         }
@@ -66,7 +70,8 @@ namespace SinkLite.Core
         {
             Thread thread;
             lock(sync) { running=false; client?.Dispose(); listener?.Dispose(); listener=null; thread=worker; }
-            thread?.Join(5000); status="蓝牙麦克风未开启";
+            bool stopped=thread==null || thread.Join(5000);
+            status=stopped ? "蓝牙麦克风未开启" : "上次蓝牙麦克风仍在关闭，请稍后点击连接重试";
         }
         public void Dispose() => Stop();
     }

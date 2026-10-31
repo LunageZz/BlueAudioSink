@@ -39,6 +39,8 @@ namespace SinkProbe
                     case "watch": return Watch(seconds);
                     case "meter": return Meter(seconds);
                     case "endpoints": return Endpoints();
+                    case "routes": return Routes();
+                    case "device": return Device(args[1]);
                     case "help":
                     case "--help":
                     case "-h":
@@ -70,6 +72,8 @@ namespace SinkProbe
                 "  watch [秒]          只观察音频端点与峰值，不做任何连接动作",
                 "  meter [秒]          只读取默认输出端点的峰值电平",
                 "  endpoints           列出全部音频端点（含未插入/禁用）",
+                "  routes              只读检查默认输出、音量、静音与 A2DP 输入峰值",
+                "  device <端点ID>     直接读取指定设备与 8 秒峰值（包含枚举可能遗漏的 A2DP 输入）",
                 "  help                显示帮助"
             });
         }
@@ -270,6 +274,48 @@ namespace SinkProbe
                 foreach (string line in lines)
                 {
                     Console.WriteLine("  " + line);
+                }
+            }
+            return 0;
+        }
+
+        // Observe both ends of the native A2DP route without changing system audio settings.
+        private static int Device(string id)
+        {
+            using (var devices = new MMDeviceEnumerator())
+            using (var device = devices.GetDevice(id))
+            {
+                Console.WriteLine(device.FriendlyName + " | " + device.State);
+                Console.WriteLine("mute=" + device.AudioEndpointVolume.Mute + " volume=" + device.AudioEndpointVolume.MasterVolumeLevelScalar);
+                for (int i = 0; i < 8; i++)
+                {
+                    Console.WriteLine("t=" + i + " peak=" + device.AudioMeterInformation.MasterPeakValue.ToString("0.0000"));
+                    Thread.Sleep(1000);
+                }
+            }
+            return 0;
+        }
+
+        private static int Routes()
+        {
+            using (var devices = new MMDeviceEnumerator())
+            {
+                foreach (Role role in new[] { Role.Console, Role.Multimedia, Role.Communications })
+                {
+                    using (var device = devices.GetDefaultAudioEndpoint(DataFlow.Render, role))
+                        Console.WriteLine("DEFAULT " + role + " | " + device.FriendlyName + " | " + device.ID);
+                }
+                foreach (DataFlow flow in new[] { DataFlow.Render, DataFlow.Capture })
+                {
+                    foreach (var device in devices.EnumerateAudioEndPoints(flow, DeviceState.Active))
+                    using (device)
+                    {
+                        bool a2dp = device.FriendlyName.IndexOf("A2DP", StringComparison.OrdinalIgnoreCase) >= 0;
+                        if (flow == DataFlow.Capture && !a2dp) continue;
+                        Console.WriteLine(flow + " | " + device.FriendlyName + " | mute=" + device.AudioEndpointVolume.Mute
+                            + " volume=" + device.AudioEndpointVolume.MasterVolumeLevelScalar.ToString("0.000")
+                            + " peak=" + device.AudioMeterInformation.MasterPeakValue.ToString("0.0000"));
+                    }
                 }
             }
             return 0;

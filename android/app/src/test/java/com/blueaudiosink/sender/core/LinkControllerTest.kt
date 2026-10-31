@@ -30,6 +30,20 @@ class LinkControllerTest {
     }
 
     @Test
+    fun bluetoothMediaCopyDoesNotChangeWifiMediaSelection() {
+        mutableState.value = SenderUiState(bluetooth = true, mediaEnabled = false)
+        LinkController.setSources(true, true)
+        assertTrue(LinkController.state.value.captureMedia)
+        assertTrue(LinkController.state.value.bluetoothMediaCopyEnabled)
+        assertFalse(LinkController.state.value.mediaEnabled)
+        mutableState.value = LinkController.state.value.copy(bluetooth = false)
+        assertFalse(LinkController.state.value.captureMedia)
+        LinkController.setSources(true, false)
+        assertTrue(LinkController.state.value.captureMedia)
+        assertTrue(LinkController.state.value.bluetoothMediaCopyEnabled)
+    }
+
+    @Test
     fun switchingComputerWhileStreamingPreservesDestinationAndStopButton() {
         streaming.setBoolean(LinkController, true)
         mutableState.value = mutableState.value.copy(phase = LinkPhase.STREAMING, packetsSent = 99)

@@ -18,10 +18,8 @@ import com.blueaudiosink.sender.ui.SenderScreen
 /**
  * 唯一 Activity。
  *
- * 开始发送的三步（顺序不可换）：
- * 1. 申请运行时权限（录音、通知）；
- * 2. 弹系统录屏授权对话框（每次都必须由用户确认）；
- * 3. 带着授权结果启动 mediaProjection 类型的前台服务。
+ * 开始发送先申请录音/通知权限。只传麦克风时直接启动 microphone 前台服务；
+ * 只有主动采集媒体副本时才申请 MediaProjection，并启动对应前台服务类型。
  */
 class MainActivity : ComponentActivity() {
 
@@ -63,7 +61,7 @@ class MainActivity : ComponentActivity() {
                     resultData = data,
                     tierName = state.tier.name,
                     deviceName = deviceName(),
-                    mediaEnabled = state.mediaEnabled,
+                    mediaEnabled = state.captureMedia,
                     microphoneEnabled = state.microphoneEnabled,
                 )
                 ContextCompat.startForegroundService(this, intent)
@@ -129,7 +127,7 @@ class MainActivity : ComponentActivity() {
 
     private fun requestConsent() {
         val state = LinkController.state.value
-        if (!state.mediaEnabled) {
+        if (!state.captureMedia) {
             pendingStart = false
             if (!state.microphoneEnabled) { LinkController.postMessage("请至少选择一路音频"); return }
             ContextCompat.startForegroundService(this, AudioCaptureService.startIntent(

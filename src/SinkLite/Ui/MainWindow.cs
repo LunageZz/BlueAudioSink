@@ -33,6 +33,8 @@ namespace SinkLite.UI
         private const int AreaDisconnect = 2;
         private const int AreaRefresh = 3;
         private const int AreaSettings = 4;
+        private const int AreaAbout = 6, AreaOriginalRepository = 7, AreaForkRepository = 8, AreaAboutClose = 9;
+        private bool aboutPage;
         private const int AreaOutput = 5;
         private const int AreaDeviceBase = 100;
         private const int AreaDropdownBase = 200;
@@ -368,7 +370,7 @@ namespace SinkLite.UI
                 s.Peak.ToString("0.000"), "|", s.Hint ?? "", "|",
                 microphonePage, "|", cableMessage, "|", cableInstallTask!=null, "|", wifi.Microphone.Current.Revision, "|", w.MicrophoneStatus, "|", bluetoothMicrophone.Status, "|",
                 deviceSettings, "|", networkSettings, "|", firewallTask != null, "|", firewallMessage, "|", firewallStatus.Available, "|", firewallStatus.RuleReady, "|", devicePage, "|", deviceListKey, "|", hoverArea, "|", pressedArea, "|",
-                dropdownOpen ? 1 : 0, "|", settingsMode ? 1 : 0, "|",
+                dropdownOpen ? 1 : 0, "|", settingsMode ? 1 : 0, "|", aboutPage, "|",
                 controller.Devices.Count, "|", cachedOutputs.Count, "|", cachedPreferredName, "|",
                 wifiMode ? 1 : 0, "|", (int)w.State, "|", w.Enabled ? 1 : 0, "|",
                 w.Detail ?? "", "|", w.Remote ?? "", "|", w.DeviceName ?? "", "|",
@@ -584,6 +586,13 @@ namespace SinkLite.UI
         {
             Metrics m = ComputeMetrics();
             if (modeSwitching) return AreaNone;
+            if (!aboutPage && Contains(AboutRect(m), x, y)) return AreaAbout;
+            if (aboutPage)
+            {
+                foreach (int area in new[] { AreaOriginalRepository, AreaForkRepository, AreaAboutClose })
+                    if (Contains(AboutControlRect(m, area), x, y)) return area;
+                return AreaNone;
+            }
             if (Contains(m.ModeBluetoothRect, x, y)) return AreaModeBluetooth;
             if (Contains(m.ModeWifiRect, x, y)) return AreaModeWifi;
             if (Contains(m.SettingsRect, x, y)) return AreaSettings;
@@ -750,6 +759,22 @@ namespace SinkLite.UI
 
             switch (area)
             {
+                case AreaAbout:
+                    aboutPage = true; dropdownOpen = false; focusArea = AreaAboutClose;
+                    break;
+                case AreaAboutClose:
+                    aboutPage = false; focusArea = AreaAbout;
+                    break;
+                case AreaOriginalRepository:
+                case AreaForkRepository:
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo(area == AreaOriginalRepository
+                            ? AppInfo.OriginalRepository
+                            : AppInfo.ForkRepository) { UseShellExecute = true });
+                    }
+                    catch (Exception ex) { log.Warn("Ui.OpenRepositoryFailed", ("detail", ex.Message)); ShowNotice("无法打开浏览器，请稍后重试"); }
+                    break;
                 case AreaMicMute: {
                     wifi.Microphone.ToggleMute(); SaveMicrophone(); break;
                 }
@@ -831,12 +856,10 @@ namespace SinkLite.UI
 
                 case AreaAutoConnect:
                 {
-                    Settings settings = Settings.Load();
-                    settings.AutoConnect = !settings.AutoConnect;
-                    settings.Save();
-                    pageSettings = settings;
+                    Settings.Update(settings => settings.AutoConnect = !settings.AutoConnect);
+                    pageSettings = Settings.Load();
                     ShowNotice("蓝牙连接偏好已保存");
-                    log.Info("Ui.AutoConnectToggled", ("enabled", settings.AutoConnect));
+                    log.Info("Ui.AutoConnectToggled", ("enabled", pageSettings.AutoConnect));
                     return;
                 }
 
@@ -855,10 +878,11 @@ namespace SinkLite.UI
                 case AreaBuffer160:
                 {
                     int value = area == AreaBuffer80 ? 80 : area == AreaBuffer120 ? 120 : 160;
-                    Settings preferences = Settings.Load();
-                    preferences.BufferBaseMs = value;
-                    preferences.BufferMaxMs = Math.Max(value, preferences.BufferMaxMs);
-                    preferences.Save(); pageSettings = preferences;
+                    Settings.Update(preferences => {
+                        preferences.BufferBaseMs = value;
+                        preferences.BufferMaxMs = Math.Max(value, preferences.BufferMaxMs);
+                    });
+                    pageSettings = Settings.Load();
                     wifi.SetBufferBase(value);
                     ShowNotice("Wi-Fi 缓冲偏好已保存");
                     return;
@@ -872,8 +896,8 @@ namespace SinkLite.UI
                 {
                     string deviceId = string.IsNullOrEmpty(pageSettings.DeviceId) ? null : pageSettings.DeviceId;
                     bluetoothMicrophone.Start();
-                    controller.RequestConnect(deviceId);
-                    log.Info("Ui.ConnectClicked", ("device", deviceId ?? "(默认)"));
+                    controller.RequestReconnectMedia(deviceId);
+                    log.Info("Ui.ConnectClicked", ("device", deviceId ?? "(默认)"), ("rebuildMedia", true));
                     return;
                 }
 
@@ -903,9 +927,8 @@ namespace SinkLite.UI
                     }
                     else
                     {
-                        Settings preferences = Settings.Load();
-                        preferences.DeviceId = pick.Id;
-                        preferences.Save(); pageSettings = preferences;
+                        Settings.Update(preferences => preferences.DeviceId = pick.Id);
+                        pageSettings = Settings.Load();
                         controller.RequestConnect(pick.Id);
                         ShowNotice("正在连接 " + pick.Name);
                     }
@@ -971,13 +994,7 @@ namespace SinkLite.UI
         {
             try
             {
-                Settings settings = Settings.Load();
-                if (string.Equals(settings.Mode, mode, StringComparison.OrdinalIgnoreCase))
-                {
-                    return;
-                }
-                settings.Mode = mode;
-                settings.Save();
+                Settings.Update(settings => settings.Mode = mode);
             }
             catch
             {
@@ -1012,7 +1029,8 @@ namespace SinkLite.UI
             }
             if (vk == 0x1B)
             {
-                if (dropdownOpen) { dropdownOpen = false; focusArea = AreaOutput; }
+                if (aboutPage) { aboutPage = false; focusArea = AreaAbout; }
+                else if (dropdownOpen) { dropdownOpen = false; focusArea = AreaOutput; }
                 else if (settingsMode) { settingsMode = false; focusArea = AreaSettings; }
                 else if (wifiDetails) { wifiDetails = false; focusArea = AreaDetails; }
                 RequestRepaint(true); return;
@@ -1028,7 +1046,12 @@ namespace SinkLite.UI
             if (vk == 0x09)
             {
                 List<int> areas = new List<int> { AreaModeBluetooth, AreaModeWifi, AreaSettings };
-                if (dropdownOpen)
+                areas.Add(AreaAbout);
+                if (aboutPage)
+                {
+                    areas = new List<int> { AreaOriginalRepository, AreaForkRepository, AreaAboutClose };
+                }
+                else if (dropdownOpen)
                 {
                     areas.Clear();
                     for (int i = 0; i < dropdownRows; i++) areas.Add(AreaDropdownBase + i);
@@ -1181,7 +1204,11 @@ namespace SinkLite.UI
 
                 Metrics m = ComputeMetrics();
 
-                if (settingsMode)
+                if (aboutPage)
+                {
+                    DrawAbout(hdcMem, m);
+                }
+                else if (settingsMode)
                 {
                     DrawSettings(hdcMem, m);
                 }
@@ -1198,13 +1225,12 @@ namespace SinkLite.UI
                     DrawBluetoothPage(hdcMem, m, snapshot);
                 }
 
-                DrawModeTabs(hdcMem, m);
-                if (settingsMode && dropdownOpen) DrawDropdown(hdcMem);
+                if (!aboutPage) DrawModeTabs(hdcMem, m);
+                if (!aboutPage && settingsMode && dropdownOpen) DrawDropdown(hdcMem);
                 DrawKeyboardFocus(hdcMem, m);
                 if (DateTime.Now < noticeUntil)
-                    Text(hdcMem, notice, fontBody, Win32.Rgb(0, 93, 165), Rect(m.Left, m.Height - S(24), m.Left + m.ContentWidth, m.Height - S(4)));
-                else
-                    Text(hdcMem, "开发作者：liubaiqing", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left, m.Height - S(24), m.Left + m.ContentWidth, m.Height - S(4)));
+                    Text(hdcMem, notice, fontBody, Win32.Rgb(0, 93, 165), Rect(m.Left, m.Height - S(24), m.Left + m.ContentWidth - S(72), m.Height - S(4)));
+                if (!aboutPage) DrawModeTab(hdcMem, AboutRect(m), "关于", false, AreaAbout);
                 Win32.BitBlt(hdcScreen, 0, 0, width, height, hdcMem, 0, 0, Win32.SRCCOPY);
             }
             finally
@@ -1370,7 +1396,7 @@ namespace SinkLite.UI
             Text(hdc, snapshot.DeviceName ?? "尚未选择", fontHeading, Win32.Rgb(23, 40, 63), Rect(m.Left + S(12), S(184), m.Left + half - S(8), S(208)));
             Text(hdc, "播放到", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + half + S(8), S(162), right - S(12), S(180)));
             Text(hdc, cachedPreferredName, fontBody, Win32.Rgb(23, 40, 63), Rect(m.Left + half + S(8), S(184), right - S(12), S(208)));
-            DrawButton(hdc, m.ConnectRect, snapshot.State == SinkState.Flowing ? "重新连接" : "连接", AreaConnect, true);
+            DrawButton(hdc, m.ConnectRect, snapshot.State == SinkState.Idle || snapshot.State == SinkState.Faulted ? "连接媒体" : "重新连接媒体", AreaConnect, true);
             DrawButton(hdc, m.DisconnectRect, "断开", AreaDisconnect, false);
             Text(hdc, "更换手机或播放设备，请前往设置。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left, S(292), right, S(316)));
             var microphone=bluetoothMicrophone.Current;
@@ -1732,12 +1758,35 @@ namespace SinkLite.UI
         private Win32.RECT RetryRect(Metrics m)
         { return Rect(m.Left + m.ContentWidth - S(76), S(66), m.Left + m.ContentWidth - S(4), S(96)); }
 
+        // Reuse the native window and existing controls so About does not stop audio.
+        private Win32.RECT AboutRect(Metrics m) => Rect(m.Left + m.ContentWidth - S(64), m.Height - S(32), m.Left + m.ContentWidth, m.Height - S(2));
+        private Win32.RECT AboutControlRect(Metrics m, int area)
+        {
+            int top = area == AreaOriginalRepository ? 150 : area == AreaForkRepository ? 232 : 332;
+            return Rect(m.Left, S(top), m.Left + m.ContentWidth, S(top + 36));
+        }
+        private void DrawAbout(IntPtr hdc, Metrics m)
+        {
+            Text(hdc, "关于 BlueAudioSink", fontTitle, Win32.Rgb(32, 40, 52), Rect(m.Left, S(24), m.Left + m.ContentWidth, S(64)));
+            Text(hdc, "版本：" + AppInfo.Version, fontBody, Win32.Rgb(88, 102, 122), Rect(m.Left, S(84), m.Left + m.ContentWidth, S(112)));
+            Text(hdc, "原作者仓库", fontHeading, Win32.Rgb(32, 40, 52), Rect(m.Left, S(118), m.Left + m.ContentWidth, S(148)));
+            DrawButton(hdc, AboutControlRect(m, AreaOriginalRepository), "github.com/liubaiqing/BlueAudioSink", AreaOriginalRepository, false);
+            Text(hdc, "当前项目仓库", fontHeading, Win32.Rgb(32, 40, 52), Rect(m.Left, S(200), m.Left + m.ContentWidth, S(230)));
+            DrawButton(hdc, AboutControlRect(m, AreaForkRepository), "github.com/LunageZz/BlueAudioSink", AreaForkRepository, false);
+            Text(hdc, "MIT License · Copyright (c) 2026 liubaiqing", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left, S(290), m.Left + m.ContentWidth, S(318)));
+            DrawButton(hdc, AboutControlRect(m, AreaAboutClose), "返回", AreaAboutClose, false);
+        }
+
         private void DrawKeyboardFocus(IntPtr hdc, Metrics m)
         {
             if (!keyboardFocus || focusArea == AreaNone) return;
             Win32.RECT r;
             switch (focusArea)
             {
+                case AreaAbout: r = AboutRect(m); break;
+                case AreaOriginalRepository:
+                case AreaForkRepository:
+                case AreaAboutClose: r = AboutControlRect(m, focusArea); break;
                 case AreaSettingsGeneral:
                 case AreaSettingsDevices:
                 case AreaSettingsNetwork:

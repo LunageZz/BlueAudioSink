@@ -1,6 +1,7 @@
 package com.blueaudiosink.sender.core
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
@@ -27,20 +28,34 @@ data class SavedDevice(
  * - 按 lastUsed 倒序，最多保存 [MAX_DEVICES] 台，超出淘汰最旧；
  * - 读失败（数据损坏/格式演进）退回空列表，绝不让界面崩。
  */
-class SavedDeviceStore(context: Context) {
+class SavedDeviceStore internal constructor(private val prefs: SharedPreferences) {
+
+    constructor(context: Context) : this(context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE))
 
     companion object {
         private const val TAG = "BlueAudioSink"
         private const val PREFS_NAME = "blueaudio_sender"
         private const val KEY_SAVED_DEVICES = "saved_devices"
+        private const val KEY_LAST_BLUETOOTH = "last_bluetooth_address"
+        private const val KEY_BLUETOOTH_MODE = "bluetooth_mode"
+        private val BLUETOOTH_ADDRESS = Regex("(?i)([0-9a-f]{2}:){5}[0-9a-f]{2}")
         /** 最多记住的设备数。 */
         const val MAX_DEVICES = 5
     }
 
     private val lock = Any()
 
-    private val prefs =
-        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    // Keep Bluetooth addresses separate from Wi-Fi IP history; never treat them as DNS names.
+    fun loadLastBluetoothAddress(): String? = prefs.getString(KEY_LAST_BLUETOOTH, null)
+        ?.takeIf { BLUETOOTH_ADDRESS.matches(it) }?.uppercase()
+
+    fun rememberBluetoothAddress(address: String) {
+        require(BLUETOOTH_ADDRESS.matches(address))
+        prefs.edit().putString(KEY_LAST_BLUETOOTH, address.uppercase()).apply()
+    }
+
+    fun loadBluetoothMode(): Boolean = prefs.getBoolean(KEY_BLUETOOTH_MODE, false)
+    fun saveBluetoothMode(enabled: Boolean) { prefs.edit().putBoolean(KEY_BLUETOOTH_MODE, enabled).apply() }
 
     /** 读取已保存设备（最近使用在前）。 */
     fun load(): List<SavedDevice> = synchronized(lock) { readLocked() }

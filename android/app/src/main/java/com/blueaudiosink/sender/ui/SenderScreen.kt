@@ -19,6 +19,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -48,6 +49,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -57,6 +59,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.blueaudiosink.sender.R
+import com.blueaudiosink.sender.BuildConfig
 import com.blueaudiosink.sender.capture.BufferTier
 import com.blueaudiosink.sender.core.LinkPhase
 import com.blueaudiosink.sender.core.SenderUiState
@@ -66,7 +69,7 @@ import java.util.Locale
 /**
  * 单页界面（自上而下）：
  * 状态卡（一行）→ 设备列表（已保存在前 + 发现到的）→「+ 手动添加」次要入口 →
- * 缓冲档位（三个胶囊）→ 开始/停止 → 底部两个数值。
+ * 缓冲档位（三个胶囊）→ 开始/停止 → 底部两个数值；标题栏提供关于入口。
  *
  * 文案原则：只保留标签与数值，不放解释性长句；所有文字来自 res/values/strings.xml。
  */
@@ -86,6 +89,7 @@ fun SenderScreen(
     onRefreshDiscovery: () -> Unit,
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
+    var aboutOpen by rememberSaveable { mutableStateOf(false) }
     val message = state.message
     LaunchedEffect(state.messageToken) {
         if (!message.isNullOrBlank()) {
@@ -105,6 +109,9 @@ fun SenderScreen(
         topBar = {
             TopAppBar(
                 title = { Text(stringResource(R.string.app_name), fontWeight = FontWeight.SemiBold) },
+                actions = {
+                    TextButton(onClick = { aboutOpen = true }) { Text(stringResource(R.string.action_about)) }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,
                     titleContentColor = MaterialTheme.colorScheme.onSurface,
@@ -134,16 +141,19 @@ fun SenderScreen(
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
                         Text("音频来源", style = MaterialTheme.typography.titleMedium)
+                        if (state.bluetooth) {
+                            Text("听手机音乐：在手机系统媒体输出中选择电脑，电脑端点击蓝牙“连接”。无需开始发送或共享屏幕。")
+                        }
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            androidx.compose.material3.Switch(checked = state.mediaEnabled,
+                            androidx.compose.material3.Switch(checked = state.captureMedia,
                                 enabled = state.phase != LinkPhase.STREAMING,
                                 onCheckedChange = { com.blueaudiosink.sender.core.LinkController.setSources(it, state.microphoneEnabled) })
-                            Text("手机媒体声音 → 电脑耳机")
+                            Text(if (state.bluetooth) "将媒体声加入虚拟麦克风（需屏幕/音频采集授权）" else "手机媒体声音 → 电脑耳机")
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             androidx.compose.material3.Switch(checked = state.microphoneEnabled,
                                 enabled = state.phase != LinkPhase.STREAMING,
-                                onCheckedChange = { com.blueaudiosink.sender.core.LinkController.setSources(state.mediaEnabled, it) })
+                                onCheckedChange = { com.blueaudiosink.sender.core.LinkController.setSources(state.captureMedia, it) })
                             Text("手机麦克风 → 电脑虚拟麦克风")
                         }
                         if (state.microphoneEnabled) {
@@ -170,18 +180,19 @@ fun SenderScreen(
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
                             Text("已配对的电脑",style=MaterialTheme.typography.titleMedium)
-                            Text("电脑端选择蓝牙模式；媒体声音仍通过系统蓝牙播放，麦克风由本应用传输。")
+                            Text("选择电脑后点击底部“开始发送”传麦克风；媒体输出需要另在手机系统中选择电脑。")
                             for (device in state.pairedDevices) TextButton(
                                 enabled=state.phase != LinkPhase.STREAMING,
                                 onClick={ onConnect(device.ip,device.port) }) {
-                                Text(if(state.targetIp==device.ip) "✓ ${device.name}" else device.name)
+                                val label = device.name + if (device.ip == state.lastBluetoothAddress) "（上次使用）" else ""
+                                Text(if(state.targetIp==device.ip) "✓ $label" else label)
                             }
                             if (state.pairedDevices.isEmpty()) Text("暂无已配对设备，请先在系统蓝牙设置中配对电脑")
                             Row {
                                 TextButton(onClick={ com.blueaudiosink.sender.core.LinkController.refreshBluetoothDevices() }) { Text("刷新") }
                                 TextButton(onClick=onBluetoothSettings) { Text("蓝牙设置") }
                             }
-                            Text("只传麦克风时可关闭媒体来源，无需录屏授权。分享媒体声需开启媒体来源并授权录屏。")
+                            Text("默认只传麦克风，无需共享屏幕。上次成功连接的电脑会置顶并自动选中，开始发送仍由你确认。")
                         }
                     }
                 } else DeviceSection(
@@ -199,11 +210,40 @@ fun SenderScreen(
                     onRefreshDiscovery = onRefreshDiscovery,
                 )
                 TierSection(state.tier, onTierChange)
+            }
+            // Keep the capture action visible even when paired devices fill the scroll area.
+            Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
                 PrimaryButton(state, onStart, onStop)
             }
             StatsBar(state)
         }
     }
+    if (aboutOpen) AboutDialog(onClose = { aboutOpen = false })
+}
+
+/** 项目来源集中展示；打开仓库交给系统浏览器，不影响当前采集会话。 */
+@Composable
+private fun AboutDialog(onClose: () -> Unit) {
+    val uriHandler = LocalUriHandler.current
+    val originalUrl = stringResource(R.string.about_original_url)
+    val forkUrl = stringResource(R.string.about_fork_url)
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text(stringResource(R.string.about_title)) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(stringResource(R.string.about_version, BuildConfig.VERSION_NAME))
+                TextButton(onClick = { uriHandler.openUri(originalUrl) }) {
+                    Column { Text(stringResource(R.string.about_original)); Text(originalUrl, style = MaterialTheme.typography.bodySmall) }
+                }
+                TextButton(onClick = { uriHandler.openUri(forkUrl) }) {
+                    Column { Text(stringResource(R.string.about_fork)); Text(forkUrl, style = MaterialTheme.typography.bodySmall) }
+                }
+                Text(stringResource(R.string.about_license), style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text(stringResource(R.string.action_close)) } },
+    )
 }
 
 @Composable
@@ -529,12 +569,6 @@ private fun StatsBar(state: SenderUiState) {
                 StatItem(stringResource(R.string.stats_loss), lossText)
                 StatItem(stringResource(R.string.stats_packets), state.packetsSent.toString())
             }
-            Text(
-                text = stringResource(R.string.developer_credit),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 12.dp),
-            )
         }
     }
 }

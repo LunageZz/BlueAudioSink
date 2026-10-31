@@ -11,7 +11,9 @@ namespace SinkLite.Platform
     internal sealed class Settings
     {
         private static readonly object updateSync = new object();
-        public static void Update(Action<Settings> apply) { lock(updateSync) { var settings=Load(); apply(settings); settings.Save(); } }
+        // All writes must read the latest snapshot and apply changes under this one lock.
+        // There is deliberately no public Save: saving a stale UI snapshot loses remote mic updates.
+        public static void Update(Action<Settings> apply) { lock(updateSync) { var settings=LoadCore(); apply(settings); settings.SaveCore(); } }
 
         public string DeviceId { get; set; } = string.Empty;
 
@@ -147,7 +149,6 @@ namespace SinkLite.Platform
             return settings;
         }
 
-        public void Save() { lock(updateSync) SaveCore(); }
         private void SaveCore()
         {
             try

@@ -410,6 +410,27 @@ class Program
             engine.Stop();
             Assert(Get(engine,"dual")==null,"Session survived disconnect");
         });
+        Test("Bluetooth shutdown timeout cannot start a new generation before the old worker exits", () => {
+            using var releaseOld = new ManualResetEventSlim();
+            using var receiver = new BluetoothMicrophoneReceiver(log, new MicrophoneState());
+            var oldWorker = new Thread(() => releaseOld.Wait()) { IsBackground = true };
+            Set(receiver, "worker", oldWorker);
+            oldWorker.Start();
+            Thread observedWorker = null;
+            try {
+                receiver.Stop(); // Exercise the real bounded Join timeout.
+                // A broken Start must not bind a real Bluetooth service in this regression.
+                // Hold the receiver lock until any newly created worker is marked stopped.
+                lock (Get(receiver, "sync")) {
+                    receiver.Start();
+                    observedWorker = (Thread)Get(receiver, "worker");
+                    Set(receiver, "running", false);
+                }
+                if (observedWorker != oldWorker) observedWorker.Join(1000);
+                Assert(ReferenceEquals(observedWorker, oldWorker), "New Bluetooth worker overlapped a timed-out shutdown");
+                Assert(receiver.Status.Contains("关闭"), "Shutdown still pending but no recovery hint was shown");
+            } finally { releaseOld.Set(); oldWorker.Join(1000); }
+        });
         Console.WriteLine($"{passed} tests passed");
     }
     sealed class FailingPlayer : IWavePlayer

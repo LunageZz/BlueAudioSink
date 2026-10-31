@@ -24,7 +24,7 @@ namespace SinkLite.Platform
                 for(int i=0;i<30;i++) bytes[i]=local[i];
                 serviceId=Marshal.AllocHGlobal(16); Marshal.StructureToPtr(ServiceId,serviceId,false);
                 address=Marshal.AllocHGlobal(30); Marshal.Copy(bytes,0,address,30);
-                var csa=new CsAddress { LocalAddress=address,LocalLength=30,SocketType=1,Protocol=3 };
+                var csa=new CsAddress { LocalAddress=new NativeSocketAddress { Address=address,Length=30 },SocketType=1,Protocol=3 };
                 addresses=Marshal.AllocHGlobal(Marshal.SizeOf<CsAddress>()); Marshal.StructureToPtr(csa,addresses,false);
                 registration=new Query { Size=Marshal.SizeOf<Query>(),Name="BlueAudioSink Microphone",ClassId=serviceId,Namespace=16,AddressCount=1,Addresses=addresses };
                 if(WSASetService(ref registration,0,0)!=0) throw new SocketException(Marshal.GetLastWin32Error());
@@ -41,8 +41,14 @@ namespace SinkLite.Platform
             if(serviceId!=IntPtr.Zero) Marshal.FreeHGlobal(serviceId);
             addresses=address=serviceId=IntPtr.Zero;
         }
+        // SOCKET_ADDRESS includes trailing pointer-alignment padding on x64.
+        // Preserve the native nesting: flattening moves SocketType/Protocol by four
+        // bytes and causes WSASetService to reject the SDP record with WSAEINVAL.
+        [StructLayout(LayoutKind.Sequential)] private struct NativeSocketAddress {
+            public IntPtr Address; public int Length;
+        }
         [StructLayout(LayoutKind.Sequential)] private struct CsAddress {
-            public IntPtr LocalAddress; public int LocalLength; public IntPtr RemoteAddress; public int RemoteLength; public int SocketType,Protocol;
+            public NativeSocketAddress LocalAddress,RemoteAddress; public int SocketType,Protocol;
         }
         [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)] private struct Query {
             public int Size; [MarshalAs(UnmanagedType.LPWStr)] public string Name;

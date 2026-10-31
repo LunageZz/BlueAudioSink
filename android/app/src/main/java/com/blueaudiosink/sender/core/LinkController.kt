@@ -75,7 +75,9 @@ object LinkController : UdpSender.Listener {
                     val store = SavedDeviceStore(app)
                     savedStore = store
                     val saved = store.load()
-                    _state.update { it.copy(savedDevices = saved) }
+                    _state.update { it.copy(savedDevices = saved, bluetooth = store.loadBluetoothMode(),
+                        microphoneEnabled = if (store.loadBluetoothMode()) true else it.microphoneEnabled,
+                        lastBluetoothAddress = store.loadLastBluetoothAddress()) }
                 }
             }
         }
@@ -157,11 +159,14 @@ object LinkController : UdpSender.Listener {
 
     @Synchronized
     fun setBluetooth(enabled: Boolean) {
-        if (streaming || _state.value.bluetooth == enabled) return
+        if (streaming) return
+        if (_state.value.bluetooth == enabled) { if (enabled) refreshBluetoothDevices(); return }
         stopDiscovery()
         sender?.close(); sender=null; stopWatchdog()
         lastPingAtMs=0
+        savedStore?.saveBluetoothMode(enabled)
         _state.update { it.copy(bluetooth=enabled,targetIp=null,targetName=null,phase=LinkPhase.IDLE,
+            microphoneEnabled=if(enabled) true else it.microphoneEnabled,
             microphoneSynced=false,virtualMicrophoneReady=false,shareMedia=false) }
         if (enabled) refreshBluetoothDevices() else appContext?.let { context -> Thread { startDiscovery(context) }.start() }
     }
@@ -171,14 +176,19 @@ object LinkController : UdpSender.Listener {
         try {
             val adapter=context.getSystemService(android.bluetooth.BluetoothManager::class.java)?.adapter
             if (adapter == null || !adapter.isEnabled) { postMessage("请先开启蓝牙，并在系统设置中与电脑配对"); return }
-            val paired=adapter.bondedDevices.map { DiscoveredDevice(it.name ?: it.address,it.address,45679,0) }.sortedBy { it.name }
-            _state.update { it.copy(pairedDevices=paired) }
+            val paired=adapter.bondedDevices.map { DiscoveredDevice(it.name ?: it.address,it.address,45679,0) }
+            _state.update {
+                val ordered = BluetoothDeviceSelection.ordered(paired, it.lastBluetoothAddress)
+                val selected = BluetoothDeviceSelection.target(ordered, it.targetIp, it.lastBluetoothAddress)
+                it.copy(pairedDevices=ordered, targetIp=selected?.ip, targetName=selected?.name)
+            }
         } catch (_: SecurityException) { postMessage("请允许访问附近设备以使用蓝牙") }
     }
     @Synchronized
     private fun connectBluetooth(address: String): Boolean {
         if (!android.bluetooth.BluetoothAdapter.checkBluetoothAddress(address)) { postMessage("蓝牙地址无效"); return false }
         sender?.close(); sender=null; stopWatchdog(); lastPingAtMs=0; pingReceived=0; pingMissed=0
+        savedForIp = null
         _state.update { it.copy(targetIp=address,targetPort=45679,
             targetName=it.pairedDevices.firstOrNull { d -> d.ip==address }?.name ?: address,
             phase=LinkPhase.IDLE,microphoneSynced=false,virtualMicrophoneReady=false,shareMedia=false) }
@@ -252,7 +262,7 @@ object LinkController : UdpSender.Listener {
             it.copy(phase = LinkPhase.STREAMING, packetsSent = 0, rttMs = -1, lossPermille = 0)
         }
         udp.sendHello(name.ifBlank { deviceName })
-        udp.sendStart((if (current.mediaEnabled) 1 else 0) or (if (current.microphoneEnabled) 2 else 0))
+        udp.sendStart((if (current.captureMedia) 1 else 0) or (if (current.microphoneEnabled) 2 else 0))
         _state.update { it.copy(microphoneSynced = false) }
         return true
     }
@@ -284,7 +294,10 @@ object LinkController : UdpSender.Listener {
     }
 
     fun setSources(media: Boolean, mic: Boolean) {
-        if (!streaming) _state.update { it.copy(mediaEnabled=media, microphoneEnabled=mic) }
+        if (!streaming) _state.update {
+            if (it.bluetooth) it.copy(bluetoothMediaCopyEnabled=media, microphoneEnabled=mic)
+            else it.copy(mediaEnabled=media, microphoneEnabled=mic)
+        }
     }
     fun setMicrophone(muted: Boolean, volume: Int, mask: Int = 3) {
         val s=_state.value
@@ -340,7 +353,14 @@ object LinkController : UdpSender.Listener {
         pingReceived++
         val hasTarget = _state.value.targetIp != null
         // 收到首包 = 连接成功：把当前目标写入本地记忆（之后从列表直接点连）
-        if (hasTarget && !_state.value.bluetooth) {
+        if (hasTarget && _state.value.bluetooth) {
+            if (savedForIp != targetHost) {
+                savedStore?.rememberBluetoothAddress(targetHost)
+                savedForIp = targetHost
+                _state.update { it.copy(lastBluetoothAddress = targetHost,
+                    pairedDevices = BluetoothDeviceSelection.ordered(it.pairedDevices, targetHost)) }
+            }
+        } else if (hasTarget) {
             val current = _state.value
             rememberTarget(current.targetIp.orEmpty(), current.targetPort, current.targetName)
         }

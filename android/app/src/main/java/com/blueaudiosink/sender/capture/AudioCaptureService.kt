@@ -28,7 +28,7 @@ import com.blueaudiosink.sender.core.LinkController
  *
  * Android 14 起 mediaProjection 类型的授权只能由“已进入前台”的服务消费：
  * 因此顺序必须是 startForeground(...) → getMediaProjection(...) → AudioRecord。
- * 每次开始都需要用户重新确认系统授权（Token 一次性）。
+ * 仅采集媒体副本时需要每次重新确认系统授权；纯麦克风不使用 MediaProjection。
  */
 class AudioCaptureService : Service() {
 

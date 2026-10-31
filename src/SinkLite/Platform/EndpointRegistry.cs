@@ -38,6 +38,8 @@ namespace SinkLite.Platform
             "虚拟音频", "Nahimic", "WO Mic", "网易"
         };
 
+        public static bool IsCableRender(EndpointInfo endpoint) => endpoint != null && endpoint.IsRender && endpoint.IsActive &&
+            endpoint.Name != null && endpoint.Name.IndexOf("CABLE Input", StringComparison.OrdinalIgnoreCase) >= 0;
         private const int StateActive = 1;
 
         /// <summary>枚举全部音频端点（含未插入/禁用）。</summary>

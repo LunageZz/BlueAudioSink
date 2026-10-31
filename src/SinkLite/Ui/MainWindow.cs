@@ -58,6 +58,12 @@ namespace SinkLite.UI
         private const int AreaFirewallEnable = 341;
         private const int AreaFirewallDisable = 342;
         private const int AreaFirewallCheck = 343;
+        private const int AreaMicrophonePage=350, AreaMicMute=351, AreaMicVolume=352, AreaShareMedia=353,
+            AreaInstallCable=354, AreaMicDevice=355, AreaDualHeadphones=356;
+        private bool microphonePage;
+        private Task<string> cableInstallTask;
+        private string cableMessage;
+
 
         private readonly SinkController controller;
         private readonly Log log;
@@ -357,6 +363,7 @@ namespace SinkLite.UI
             return string.Concat(
                 (int)s.State, "|", s.Detail ?? "", "|", s.DeviceName ?? "", "|",
                 s.Peak.ToString("0.000"), "|", s.Hint ?? "", "|",
+                microphonePage, "|", cableMessage, "|", cableInstallTask!=null, "|", wifi.Microphone.Current.Revision, "|", w.MicrophoneStatus, "|",
                 deviceSettings, "|", networkSettings, "|", firewallTask != null, "|", firewallMessage, "|", firewallStatus.Available, "|", firewallStatus.RuleReady, "|", devicePage, "|", deviceListKey, "|", hoverArea, "|", pressedArea, "|",
                 dropdownOpen ? 1 : 0, "|", settingsMode ? 1 : 0, "|",
                 controller.Devices.Count, "|", cachedOutputs.Count, "|", cachedPreferredName, "|",
@@ -375,6 +382,10 @@ namespace SinkLite.UI
 
         private void OnTimer()
         {
+            if(cableInstallTask!=null && cableInstallTask.IsCompleted) {
+                try { cableMessage=cableInstallTask.GetAwaiter().GetResult(); } catch(Exception ex) { cableMessage=ex.Message; }
+                cableInstallTask=null;
+            }
             RefreshOutputCache(false);
             RefreshConnectionDevices();
             if (firewallTask != null && firewallTask.IsCompleted)
@@ -446,7 +457,7 @@ namespace SinkLite.UI
                 string preferred = null;
                 foreach (EndpointInfo o in cachedOutputs)
                 {
-                    if (o.Id == controller.PreferredRenderId)
+                    if (o.Id == (wifi.Current.DualMode ? Settings.Load().PreferredRenderId : controller.PreferredRenderId))
                     {
                         preferred = o.Name;
                         break;
@@ -527,6 +538,13 @@ namespace SinkLite.UI
             int right = m.Left + m.ContentWidth;
             switch (area)
             {
+                case AreaMicrophonePage: return Rect(m.Left+S(272),S(60),m.Left+S(352),S(90));
+                case AreaMicMute: return Rect(m.Left+S(8),S(146),right-S(8),S(194));
+                case AreaMicVolume: return Rect(m.Left+S(16),S(232),right-S(16),S(260));
+                case AreaShareMedia: return Rect(m.Left+S(8),S(268),right-S(8),S(316));
+                case AreaDualHeadphones: return Rect(m.Left,S(328),m.Left+m.ContentWidth/2-S(4),S(364));
+                case AreaMicDevice: return Rect(m.Left+m.ContentWidth/2+S(4),S(328),right,S(364));
+                case AreaInstallCable: return Rect(m.Left,S(376),right,S(410));
                 case AreaSettingsNetwork: return Rect(m.Left + S(192), S(60), m.Left + S(264), S(90));
                 case AreaFirewallEnable: return Rect(m.Left, S(240), m.Left + (m.ContentWidth - S(8)) / 2, S(274));
                 case AreaFirewallDisable: return Rect(m.Left + (m.ContentWidth + S(8)) / 2, S(240), right, S(274));
@@ -577,8 +595,13 @@ namespace SinkLite.UI
             }
             if (settingsMode)
             {
-                foreach (int tab in new[] { AreaSettingsGeneral, AreaSettingsDevices, AreaSettingsNetwork })
+                foreach (int tab in new[] { AreaSettingsGeneral, AreaSettingsDevices, AreaSettingsNetwork, AreaMicrophonePage })
                     if (Contains(SettingsControlRect(m, tab), x, y)) return tab;
+                if(microphonePage) {
+                    foreach(int a in new[] {AreaMicMute,AreaMicVolume,AreaShareMedia,AreaDualHeadphones,AreaMicDevice,AreaInstallCable})
+                        if(Contains(SettingsControlRect(m,a),x,y)) return IsEnabled(a)?a:AreaNone;
+                    return AreaNone;
+                }
                 if (networkSettings)
                 {
                     foreach (int button in new[] { AreaFirewallEnable, AreaFirewallDisable, AreaFirewallCheck })
@@ -622,6 +645,7 @@ namespace SinkLite.UI
         private bool IsEnabled(int area)
         {
             if (modeSwitching) return false;
+            if(area==AreaInstallCable) return cableInstallTask==null;
             if (area == AreaOutput) return settingsMode && !deviceSettings && !networkSettings && cachedOutputs.Count > 0;
             if (area == AreaFirewallEnable || area == AreaFirewallCheck) return firewallTask == null;
             if (area == AreaFirewallDisable) return firewallTask == null && firewallStatus.Available && firewallStatus.RuleExists;
@@ -638,6 +662,7 @@ namespace SinkLite.UI
 
         private void OnMouseMove(int x, int y)
         {
+            if(pressedArea==AreaMicVolume) { SetMicVolumeFromMouse(x); RequestRepaint(true); }
             if (!mouseInside)
             {
                 mouseInside = true;
@@ -669,6 +694,7 @@ namespace SinkLite.UI
         private void OnMouseDown(int x, int y)
         {
             pressedArea = HitTest(x, y);
+            if(pressedArea==AreaMicVolume) { Win32.SetCapture(hwnd); SetMicVolumeFromMouse(x); }
             focusArea = pressedArea;
             keyboardFocus = false;
             RequestRepaint(true);
@@ -676,6 +702,7 @@ namespace SinkLite.UI
 
         private void OnMouseUp(int x, int y)
         {
+            if(pressedArea==AreaMicVolume) { SetMicVolumeFromMouse(x); SaveMicrophone(); Win32.ReleaseCapture(); }
             int releaseArea = HitTest(x, y);
             int area = pressedArea;
             pressedArea = AreaNone;
@@ -700,7 +727,9 @@ namespace SinkLite.UI
                 if (index >= 0 && index < cachedOutputs.Count)
                 {
                     EndpointInfo pick = cachedOutputs[index];
-                    bool changed = controller.SetPreferredRender(pick.Id, pick.Name);
+                    bool changed;
+                    if(wifi.Current.DualMode) { Settings.Update(saved=>saved.PreferredRenderId=pick.Id); changed=true; }
+                    else changed=controller.SetPreferredRender(pick.Id,pick.Name);
                     if (changed)
                     {
                         wifi.RefreshOutput();
@@ -718,9 +747,26 @@ namespace SinkLite.UI
 
             switch (area)
             {
+                case AreaMicMute: {
+                    wifi.Microphone.ToggleMute(); SaveMicrophone(); break;
+                }
+                case AreaShareMedia: {
+                    wifi.Microphone.ToggleShare(); SaveMicrophone(); break;
+                }
+                case AreaMicVolume: if(keyboardFocus) { var s=wifi.Microphone.Current; wifi.Microphone.SetVolume(s.Volume==100?0:s.Volume+10); SaveMicrophone(); } break;
+                case AreaMicDevice: CycleAudioOutput(true); break;
+                case AreaDualHeadphones: CycleAudioOutput(false); break;
+                case AreaInstallCable:
+                    if(cableInstallTask==null && Win32.MessageBox(hwnd,
+                        "将下载并启动 VB-Audio 官方 VB-CABLE 安装器。\n需要管理员授权，完成安装后需重启电脑。\nVB-CABLE 为 donationware，来源和许可：vb-audio.com/Cable。\n继续下载？", "安装虚拟麦克风",0x24)==6) {
+                        cableMessage="正在下载官方驱动…"; cableInstallTask=Task.Run(()=>CableInstaller.DownloadAndStart());
+                    }
+                    break;
                 case AreaSettingsGeneral:
                 case AreaSettingsDevices:
                 case AreaSettingsNetwork:
+                case AreaMicrophonePage:
+                    microphonePage=area==AreaMicrophonePage;
                     deviceSettings = area == AreaSettingsDevices;
                     networkSettings = area == AreaSettingsNetwork;
                     if (networkSettings) BeginFirewallOperation(AreaFirewallCheck);
@@ -952,6 +998,11 @@ namespace SinkLite.UI
         private void OnKeyDown(int vk)
         {
             if (modeSwitching) return;
+            if(focusArea==AreaMicVolume && (vk==0x25 || vk==0x27 || vk==0x24 || vk==0x23)) {
+                var s=wifi.Microphone.Current;
+                wifi.Microphone.SetVolume(vk==0x24?0:vk==0x23?100:s.Volume+(vk==0x25?-5:5));
+                SaveMicrophone(); RequestRepaint(true); return;
+            }
             if (vk == 0x1B)
             {
                 if (dropdownOpen) { dropdownOpen = false; focusArea = AreaOutput; }
@@ -977,8 +1028,9 @@ namespace SinkLite.UI
                 }
                 else if (settingsMode)
                 {
-                    areas.AddRange(new[] { AreaSettingsGeneral, AreaSettingsDevices, AreaSettingsNetwork });
-                    if (networkSettings) areas.AddRange(new[] { AreaFirewallEnable, AreaFirewallDisable, AreaFirewallCheck });
+                    areas.AddRange(new[] { AreaSettingsGeneral, AreaSettingsDevices, AreaSettingsNetwork, AreaMicrophonePage });
+                    if(microphonePage) areas.AddRange(new[] {AreaMicMute,AreaMicVolume,AreaShareMedia,AreaDualHeadphones,AreaMicDevice,AreaInstallCable});
+                    else if (networkSettings) areas.AddRange(new[] { AreaFirewallEnable, AreaFirewallDisable, AreaFirewallCheck });
                     else if (deviceSettings)
                     {
                         areas.AddRange(new[] { AreaDeviceBluetooth, AreaDeviceWifi });
@@ -1055,6 +1107,9 @@ namespace SinkLite.UI
                     RequestRepaint(true);
                     return IntPtr.Zero;
 
+                case 0x0215: // WM_CAPTURECHANGED
+                    if(pressedArea==AreaMicVolume) { SaveMicrophone(); pressedArea=AreaNone; RequestRepaint(true); }
+                    return IntPtr.Zero;
                 case Win32.WM_TIMER:
                     OnTimer();
                     return IntPtr.Zero;
@@ -1402,9 +1457,11 @@ namespace SinkLite.UI
         /// </summary>
         private void DrawSettings(IntPtr hdc, Metrics m)
         {
-            DrawModeTab(hdc, SettingsControlRect(m, AreaSettingsGeneral), "常规", !deviceSettings && !networkSettings, AreaSettingsGeneral);
+            DrawModeTab(hdc, SettingsControlRect(m, AreaSettingsGeneral), "常规", !deviceSettings && !networkSettings && !microphonePage, AreaSettingsGeneral);
             DrawModeTab(hdc, SettingsControlRect(m, AreaSettingsDevices), "连接设备", deviceSettings, AreaSettingsDevices);
             DrawModeTab(hdc, SettingsControlRect(m, AreaSettingsNetwork), "网络", networkSettings, AreaSettingsNetwork);
+            DrawModeTab(hdc,SettingsControlRect(m,AreaMicrophonePage),"麦克风",microphonePage,AreaMicrophonePage);
+            if(microphonePage) { DrawMicrophonePage(hdc,m); return; }
             if (networkSettings) { DrawNetworkSettings(hdc, m); return; }
             if (deviceSettings) { DrawDeviceSettings(hdc, m); return; }
             Win32.RECT general = Rect(m.Left, S(104), m.Left + m.ContentWidth, S(232));
@@ -1422,7 +1479,45 @@ namespace SinkLite.UI
             DrawModeTab(hdc, m.Buffer160Rect, "160 ms", pageSettings.BufferBaseMs == 160, AreaBuffer160);
             Text(hdc, "缓冲越高越抗抖动，开始播放会稍晚。", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(12), S(376), m.Left + m.ContentWidth - S(12), S(394)));
             DrawButton(hdc, m.LogsButtonRect, "打开日志目录", AreaOpenLogs, false);
-            Text(hdc, "BlueAudioSink 0.1.0", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(154), S(412), m.Left + m.ContentWidth, S(444)));
+            Text(hdc, "BlueAudioSink 0.2.0-dev", fontSmall, Win32.Rgb(88, 102, 122), Rect(m.Left + S(154), S(412), m.Left + m.ContentWidth, S(444)));
+        }
+
+        private void SaveMicrophone()
+        {
+            Settings.Update(saved=> { var state=wifi.Microphone.Current; saved.MicrophoneMuted=state.Muted; saved.MicrophoneVolume=state.Volume; saved.SharePhoneMedia=state.Share; });
+        }
+        private void SetMicVolumeFromMouse(int x)
+        {
+            var track=SettingsControlRect(ComputeMetrics(),AreaMicVolume); var state=wifi.Microphone.Current;
+            int v=Math.Clamp((x-track.Left)*100/Math.Max(1,track.Right-track.Left),0,100);
+            wifi.Microphone.SetVolume(v);
+        }
+        private void CycleAudioOutput(bool virtualOutput)
+        {
+            var choices=new List<EndpointInfo>();
+            foreach(var e in EndpointRegistry.EnumerateAll()) if(e.IsRender&&e.IsActive&&(virtualOutput?EndpointRegistry.IsCableRender(e):!e.IsVirtual)) choices.Add(e);
+            if(choices.Count==0) { ShowNotice(virtualOutput?"未找到虚拟设备，请先安装 VB-CABLE":"未找到物理播放设备"); return; }
+            var saved=Settings.Load(); string old=virtualOutput?saved.VirtualRenderId:saved.PreferredRenderId;
+            int index=choices.FindIndex(e=>e.Id==old); var selected=choices[(index+1)%choices.Count];
+            Settings.Update(current=> { if(virtualOutput) current.VirtualRenderId=selected.Id; else current.PreferredRenderId=selected.Id; });
+            pageSettings=Settings.Load(); ShowNotice("已选择："+selected.Name);
+        }
+        private void DrawMicrophonePage(IntPtr hdc, Metrics m)
+        {
+            var state=wifi.Microphone.Current; var snapshot=wifi.Current;
+            Text(hdc,snapshot.DualMode?snapshot.MicrophoneStatus:"在手机开启麦克风后，选择 Wi-Fi 并开始发送",fontSmall,Win32.Rgb(88,102,122),Rect(m.Left,S(104),m.Left+m.ContentWidth,S(140)));
+            DrawPreference(hdc,m,S(146),AreaMicMute,"麦克风静音","与手机同步，不影响媒体声音",state.Muted);
+            Text(hdc,"麦克风音量："+state.Volume+"%",fontBody,Win32.Rgb(23,40,63),Rect(m.Left+S(12),S(204),m.Left+m.ContentWidth,S(230)));
+            var track=SettingsControlRect(m,AreaMicVolume);
+            RoundFill(hdc,Rect(track.Left,track.Top+S(11),track.Right,track.Top+S(17)),S(3),brushSwitchOff);
+            int knob=track.Left+(track.Right-track.Left)*state.Volume/100;
+            RoundFill(hdc,Rect(track.Left,track.Top+S(11),knob,track.Top+S(17)),S(3),brushAccent);
+            RoundFill(hdc,Rect(knob-S(7),track.Top+S(7),knob+S(7),track.Top+S(21)),S(7),brushAccent);
+            DrawPreference(hdc,m,S(268),AreaShareMedia,"分享手机声音","耳机继续播放，同时加入虚拟麦克风",state.Share);
+            DrawButton(hdc,SettingsControlRect(m,AreaDualHeadphones),"切换耳机输出",AreaDualHeadphones,false);
+            DrawButton(hdc,SettingsControlRect(m,AreaMicDevice),"切换虚拟设备",AreaMicDevice,false);
+            DrawButton(hdc,SettingsControlRect(m,AreaInstallCable),cableInstallTask==null?"安装虚拟麦克风（VB-CABLE）":"正在下载安装包…",AreaInstallCable,true);
+            Text(hdc,cableMessage??"会议软件中选择 CABLE Output；来源：vb-audio.com",fontSmall,Win32.Rgb(88,102,122),Rect(m.Left,S(416),m.Left+m.ContentWidth,S(456)));
         }
 
         private void DrawNetworkSettings(IntPtr hdc, Metrics m)
@@ -1640,6 +1735,13 @@ namespace SinkLite.UI
                 case AreaPreviousPage:
                 case AreaNextPage:
                 case AreaDeviceBluetooth:
+                case AreaMicrophonePage:
+                case AreaMicMute:
+                case AreaMicVolume:
+                case AreaShareMedia:
+                case AreaDualHeadphones:
+                case AreaMicDevice:
+                case AreaInstallCable:
                 case AreaDeviceWifi: r = SettingsControlRect(m, focusArea); break;
                 case AreaModeBluetooth: r = m.ModeBluetoothRect; break;
                 case AreaModeWifi: r = m.ModeWifiRect; break;

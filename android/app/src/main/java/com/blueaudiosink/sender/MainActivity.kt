@@ -51,6 +51,8 @@ class MainActivity : ComponentActivity() {
                     resultData = data,
                     tierName = state.tier.name,
                     deviceName = deviceName(),
+                    mediaEnabled = state.mediaEnabled,
+                    microphoneEnabled = state.microphoneEnabled,
                 )
                 ContextCompat.startForegroundService(this, intent)
             } else {
@@ -112,6 +114,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestConsent() {
+        val state = LinkController.state.value
+        if (!state.mediaEnabled) {
+            pendingStart = false
+            if (!state.microphoneEnabled) { LinkController.postMessage("请至少选择一路音频"); return }
+            ContextCompat.startForegroundService(this, AudioCaptureService.startIntent(
+                this, 0, null, state.tier.name, deviceName(), false, true))
+            return
+        }
         val intent = MediaProjectionHelper.createConsentIntent(this)
         if (intent == null) {
             pendingStart = false

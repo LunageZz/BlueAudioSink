@@ -21,6 +21,8 @@ namespace SinkLite.Platform
         public const int WM_LBUTTONDBLCLK = 0x0203;
         public const int WM_RBUTTONUP = 0x0205;
         public const int WM_MOUSEMOVE = 0x0200;
+        [DllImport("user32.dll")] public static extern IntPtr SetCapture(IntPtr hwnd);
+        [DllImport("user32.dll")] public static extern bool ReleaseCapture();
         public const int WM_KEYDOWN = 0x0100;
         public const int WM_MOUSELEAVE = 0x02A3;
         public const int WM_SETCURSOR = 0x0020;

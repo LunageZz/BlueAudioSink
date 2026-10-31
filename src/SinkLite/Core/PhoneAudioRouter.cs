@@ -16,7 +16,21 @@ namespace SinkLite.Core
         private readonly PlayoutBuffer sharedMedia = new PlayoutBuffer();
         private bool shareMedia;
         private bool microphoneMuted;
+        private int microphoneVolume = 100;
+        private bool headphonesEnabled = true, virtualEnabled = true;
+        public int MicrophoneVolume { get { lock (sync) return microphoneVolume; } set { lock (sync) microphoneVolume = Math.Clamp(value, 0, 100); } }
+        public void EnableOutputs(bool headphonesReady, bool virtualReady)
+        {
+            lock (sync) {
+                headphonesEnabled = headphonesReady; virtualEnabled = virtualReady;
+                if (!headphonesReady) headphones.Clear();
+                if (!virtualReady) { microphone.Clear(); sharedMedia.Clear(); }
+            }
+        }
         public IWaveProvider Headphones => headphones;
+        public void EnableMmcss(bool enabled) { headphones.UseMmcss=enabled; microphone.UseMmcss=enabled; }
+        public void ReleaseHeadphoneThread() { headphones.ReleaseAudioThread(); }
+        public void ReleaseMicrophoneThread() { microphone.ReleaseAudioThread(); }
         public IWaveProvider VirtualMicrophone { get; }
         public PhoneAudioRouter() { VirtualMicrophone = new MixOutput(this); }
 
@@ -44,15 +58,18 @@ namespace SinkLite.Core
             Validate(pcm, offset, count);
             lock (sync)
             {
-                headphones.Add(pcm, offset, count);
-                if (shareMedia) sharedMedia.Add(pcm, offset, count);
+                if (headphonesEnabled) headphones.Add(pcm, offset, count);
+                if (virtualEnabled && shareMedia) sharedMedia.Add(pcm, offset, count);
             }
         }
         public void AddMicrophone(byte[] pcm, int offset, int count)
         {
             Validate(pcm, offset, count);
-            lock (sync) if (!microphoneMuted) microphone.Add(pcm, offset, count);
+            lock (sync) if (virtualEnabled && !microphoneMuted) microphone.Add(pcm, offset, count);
         }
+        public void ClearVirtual() { lock(sync) { microphone.Clear(); sharedMedia.Clear(); } }
+        public void ClearMedia() { lock(sync) { headphones.Clear(); sharedMedia.Clear(); } }
+        public void ClearMicrophone() { lock(sync) microphone.Clear(); }
         public void Clear()
         {
             lock (sync) { headphones.Clear(); microphone.Clear(); sharedMedia.Clear(); }
@@ -74,6 +91,11 @@ namespace SinkLite.Core
                 lock (owner.sync)
                 {
                     owner.microphone.Read(data, offset, count);
+                    for (int i = offset; i < offset + count; i += 2) {
+                        short sample = (short)(data[i] | data[i + 1] << 8);
+                        short scaled = owner.microphoneMuted ? (short)0 : (short)(sample * owner.microphoneVolume / 100);
+                        data[i] = (byte)scaled; data[i + 1] = (byte)(scaled >> 8);
+                    }
                     if (!owner.shareMedia) return count;
                     if (music.Length < count) music = new byte[count];
                     owner.sharedMedia.Read(music, 0, count);

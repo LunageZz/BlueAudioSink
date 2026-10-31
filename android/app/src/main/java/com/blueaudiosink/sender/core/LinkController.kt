@@ -189,22 +189,22 @@ object LinkController : UdpSender.Listener {
     // ---------------------------------------------------------------- 发送（由前台服务驱动）
 
     /** 采集已就绪：发 HELLO + START，seq 归零，随后保持 200 包/秒。 */
-    fun startStreaming(name: String) {
+    fun startStreaming(name: String): Boolean {
         if (!ensureSocket()) {
             fail("网络初始化失败：无法监听 45678 端口")
-            return
+            return false
         }
-        val udp = sender ?: return
+        val udp = sender ?: return false
         val current = _state.value
         if (!udp.hasTarget()) {
             val ip = current.targetIp
             if (ip.isNullOrBlank()) {
                 fail("尚未连接电脑，无法开始发送")
-                return
+                return false
             }
             if (!udp.setTarget(ip, current.targetPort)) {
                 fail("目标地址无效：" + ip)
-                return
+                return false
             }
         }
         streaming = true
@@ -216,7 +216,9 @@ object LinkController : UdpSender.Listener {
             it.copy(phase = LinkPhase.STREAMING, packetsSent = 0, rttMs = -1, lossPermille = 0)
         }
         udp.sendHello(name.ifBlank { deviceName })
-        udp.sendStart()
+        udp.sendStart((if (current.mediaEnabled) 1 else 0) or (if (current.microphoneEnabled) 2 else 0))
+        _state.update { it.copy(microphoneSynced = false) }
+        return true
     }
 
     /** 采集结束：发 STOP（不重传），PC 5 秒超时兜底。 */
@@ -231,14 +233,42 @@ object LinkController : UdpSender.Listener {
     }
 
     /** 采集线程逐包调用；buffer 会被下一次出包覆盖，必须同步发完。 */
-    fun sendAudio(buffer: ByteArray, length: Int, timestampUs: Int, discontinuity: Boolean) {
+    fun sendAudio(buffer: ByteArray, length: Int, timestampUs: Int, discontinuity: Boolean, stream: Int = 0) {
         if (!streaming) return
-        sender?.sendAudio(buffer, length, timestampUs, discontinuity)
+        if (stream == 1 && _state.value.microphoneMuted) {
+            // Local privacy gate; volume gain is applied only once, on the PC.
+            sender?.sendAudio(ByteArray(length), length, timestampUs, discontinuity, stream)
+        } else sender?.sendAudio(buffer, length, timestampUs, discontinuity, stream)
         pendingPackets++
         if (pendingPackets >= PACKET_UI_STEP) {
             val sent = pendingPackets
             pendingPackets = 0
             _state.update { it.copy(packetsSent = it.packetsSent + sent) }
+        }
+    }
+
+    fun setSources(media: Boolean, mic: Boolean) {
+        if (!streaming) _state.update { it.copy(mediaEnabled=media, microphoneEnabled=mic) }
+    }
+    fun setMicrophone(muted: Boolean, volume: Int, mask: Int = 3) {
+        val s=_state.value
+        val v=if(mask and 2 != 0) volume.coerceIn(0,100) else s.microphoneVolume
+        val m=if(mask and 1 != 0) muted else s.microphoneMuted
+        if (!streaming || !s.microphoneEnabled) {
+            _state.update { it.copy(microphoneMuted=m,microphoneVolume=v) }; return
+        }
+        if (sender?.requestMicrophone(m,v,mask) == true)
+            _state.update { it.copy(microphoneMuted=m,microphoneVolume=v,microphoneSynced=false) }
+        else postMessage("正在等待电脑确认麦克风连接")
+    }
+    override fun onMicrophoneState(status: com.blueaudiosink.sender.net.MicrophoneStatus) {
+        if (!streaming || sender?.isCurrentSession(status.sessionId) != true) return
+        _state.update {
+            if (it.targetIp!=status.host || it.targetPort!=status.port) return@update it
+            it.copy(microphoneMuted=status.muted,microphoneVolume=status.volume,
+                message=if(status.requestOverridden) "电脑设置已变化，已同步最新麦克风状态" else it.message,
+                messageToken=if(status.requestOverridden) it.messageToken+1 else it.messageToken,
+                microphoneSynced=true,virtualMicrophoneReady=status.deviceReady,shareMedia=status.shareMedia)
         }
     }
 
@@ -373,6 +403,8 @@ object LinkController : UdpSender.Listener {
                 } catch (_: InterruptedException) {
                     break
                 }
+                if (streaming && _state.value.microphoneEnabled && sender?.isDualReady() != true)
+                    _state.update { it.copy(microphoneSynced=false) }
                 if (!streaming && lastPingAtMs > 0 && !pingFresh()) {
                     _state.update { it.copy(phase = LinkPhase.IDLE) }
                 }

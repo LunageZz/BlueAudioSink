@@ -9,6 +9,13 @@ enum class LinkPhase { IDLE, CONNECTED, STREAMING }
 /** 单页 UI 的全部状态（由 [LinkController] 唯一持有）。 */
 data class SenderUiState(
     val phase: LinkPhase = LinkPhase.IDLE,
+    val microphoneEnabled: Boolean = false,
+    val mediaEnabled: Boolean = true,
+    val microphoneMuted: Boolean = false,
+    val microphoneVolume: Int = 100,
+    val microphoneSynced: Boolean = false,
+    val virtualMicrophoneReady: Boolean = false,
+    val shareMedia: Boolean = false,
     val targetName: String? = null,
     val targetIp: String? = null,
     val targetPort: Int = 45_679,

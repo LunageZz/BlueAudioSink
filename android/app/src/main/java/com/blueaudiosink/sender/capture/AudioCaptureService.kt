@@ -47,11 +47,15 @@ class AudioCaptureService : Service() {
         fun startIntent(
             context: Context,
             resultCode: Int,
-            resultData: Intent,
+            resultData: Intent?,
             tierName: String,
             deviceName: String,
+            mediaEnabled: Boolean = true,
+            microphoneEnabled: Boolean = false,
         ): Intent = Intent(context, AudioCaptureService::class.java).apply {
             action = ACTION_START
+            putExtra("media_enabled", mediaEnabled)
+            putExtra("microphone_enabled", microphoneEnabled)
             putExtra(EXTRA_RESULT_CODE, resultCode)
             putExtra(EXTRA_RESULT_DATA, resultData)
             putExtra(EXTRA_TIER, tierName)
@@ -64,20 +68,13 @@ class AudioCaptureService : Service() {
 
     private var projection: MediaProjection? = null
     private var recorder: PcmRecorder? = null
+    private var microphoneRecorder: PcmRecorder? = null
+    @Volatile private var captureGeneration = 0
+    private var projectionCallback: MediaProjection.Callback? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val TAG = "BlueAudioSink"
-
-    private val projectionCallback = object : MediaProjection.Callback() {
-        override fun onStop() {
-            // 用户点了系统「停止投放」，或系统回收了授权
-            releaseCapture()
-            LinkController.postMessage(getString(R.string.error_projection_stopped))
-            LinkController.stopStreaming()
-            stopSelf()
-        }
-    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -90,7 +87,13 @@ class AudioCaptureService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
-                startForegroundCompat(getString(R.string.notification_capturing))
+                LinkController.stopStreaming()
+                releaseProjection()
+                val media = intent.getBooleanExtra("media_enabled", true)
+                val mic = intent.getBooleanExtra("microphone_enabled", false)
+                if (!media && !mic) { failAndStop("请至少选择一路音频"); return START_NOT_STICKY }
+                try { startForegroundCompat(getString(R.string.notification_capturing), media, mic) }
+                catch (ex: Exception) { failAndStop("无法启动采集服务：" + ex.message); return START_NOT_STICKY }
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
                 val resultData: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
@@ -101,13 +104,13 @@ class AudioCaptureService : Service() {
                 val tier = BufferTier.fromName(intent.getStringExtra(EXTRA_TIER))
                 val deviceName = intent.getStringExtra(EXTRA_DEVICE_NAME)
                     ?: getString(R.string.default_device_name)
-                if (resultData == null) {
+                if (media && resultData == null) {
                     failAndStop(getString(R.string.error_no_projection))
                 } else {
                     // 只清理上一次的采集会话，绝不能在这里 stopForeground：
                     // 否则会丢掉 mediaProjection 前台类型，导致 getMediaProjection 抛 SecurityException
                     releaseProjection()
-                    startCapture(resultCode, resultData, tier, deviceName)
+                    startCapture(resultCode, resultData, tier, deviceName, media, mic)
                 }
             }
 
@@ -122,53 +125,44 @@ class AudioCaptureService : Service() {
     }
 
     override fun onDestroy() {
+        LinkController.stopStreaming()
         releaseCapture()
         super.onDestroy()
     }
 
     // ---------------------------------------------------------------- 采集
 
-    private fun startCapture(resultCode: Int, resultData: Intent, tier: BufferTier, deviceName: String) {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            failAndStop(getString(R.string.error_record_permission))
-            return
+    private fun startCapture(resultCode: Int, resultData: Intent?, tier: BufferTier, deviceName: String,
+                             media: Boolean, mic: Boolean) {
+        val generation = captureGeneration
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            failAndStop(getString(R.string.error_record_permission)); return
         }
-        val manager = getSystemService(MediaProjectionManager::class.java)
-        val mediaProjection = try {
-            manager?.getMediaProjection(resultCode, resultData)
-        } catch (e: Exception) {
-            Log.w(TAG, "getMediaProjection failed", e)
-            null
+        if (media) {
+            val mp = try { getSystemService(MediaProjectionManager::class.java)?.getMediaProjection(resultCode, requireNotNull(resultData)) }
+            catch (ex: Exception) { null }
+            if (mp == null) { failAndStop(getString(R.string.error_projection_denied)); return }
+            val callback = object : MediaProjection.Callback() {
+                override fun onStop() {
+                    if (generation != captureGeneration) return
+                    stopCapture(); LinkController.postMessage(getString(R.string.error_projection_stopped)); stopSelf()
+                }
+            }
+            projection = mp; projectionCallback = callback
+            mp.registerCallback(callback, mainHandler)
+            recorder = PcmRecorder(mp, tier = tier,
+                onPacket = { b, n, ts, gap -> if (generation == captureGeneration) LinkController.sendAudio(b,n,ts,gap,0) },
+                onError = { code -> mainHandler.post { if (generation == captureGeneration) handleRecorderError(code) } })
+            if (recorder?.start() != true) { failAndStop("媒体音频采集启动失败"); return }
         }
-        if (mediaProjection == null) {
-            Log.w(TAG, "getMediaProjection returned null, resultCode=" + resultCode)
-            failAndStop(getString(R.string.error_projection_denied))
-            return
+        if (mic) {
+            microphoneRecorder = PcmRecorder(null, microphone = true, tier = tier,
+                onPacket = { b, n, ts, gap -> if (generation == captureGeneration) LinkController.sendAudio(b,n,ts,gap,1) },
+                onError = { code -> mainHandler.post { if (generation == captureGeneration) handleRecorderError(code) } })
+            if (microphoneRecorder?.start() != true) { failAndStop("麦克风采集启动失败，请检查录音权限及占用情况"); return }
         }
-        Log.i(TAG, "MediaProjection acquired, starting recorder")
-        mediaProjection.registerCallback(projectionCallback, mainHandler)
-        projection = mediaProjection
-
-        val pcmRecorder = PcmRecorder(
-            projection = mediaProjection,
-            tier = tier,
-            onPacket = { buffer, length, timestampUs, discontinuity ->
-                LinkController.sendAudio(buffer, length, timestampUs, discontinuity)
-            },
-            onError = { code -> mainHandler.post { handleRecorderError(code) } },
-        )
-        if (!pcmRecorder.start()) {
-            Log.w(TAG, "PcmRecorder.start() returned false")
-            releaseCapture()
-            stopSelf()
-            return
-        }
-        Log.i(TAG, "recorder started, sending START")
-        recorder = pcmRecorder
-        LinkController.startStreaming(deviceName)
-        updateNotification(getString(R.string.notification_streaming))
+        if (!LinkController.startStreaming(deviceName)) { releaseCapture(); stopSelf(); return }
+        updateNotification(if (mic && media) "正在发送媒体声音与麦克风" else if (mic) "正在发送麦克风" else getString(R.string.notification_streaming))
     }
 
     private fun handleRecorderError(code: Int) {
@@ -183,6 +177,7 @@ class AudioCaptureService : Service() {
 
     private fun failAndStop(message: String) {
         Log.w(TAG, "capture failed: " + message)
+        LinkController.stopStreaming()
         LinkController.fail(message)
         releaseCapture()
         stopSelf()
@@ -195,16 +190,19 @@ class AudioCaptureService : Service() {
 
     /** 只释放采集对象，保留前台服务状态（启动新会话时使用）。 */
     private fun releaseProjection() {
+        captureGeneration++
+        microphoneRecorder?.stop(); microphoneRecorder = null
         recorder?.stop()
         recorder = null
         projection?.let {
             try {
-                it.unregisterCallback(projectionCallback)
+                projectionCallback?.let { callback -> it.unregisterCallback(callback) }
                 it.stop()
             } catch (_: Exception) {
             }
         }
         projection = null
+        projectionCallback = null
     }
 
     /** 释放采集对象并退出前台状态（停止/失败/销毁时使用）。 */
@@ -233,11 +231,12 @@ class AudioCaptureService : Service() {
         manager.createNotificationChannel(channel)
     }
 
-    private fun startForegroundCompat(text: String) {
+    private fun startForegroundCompat(text: String, media: Boolean, mic: Boolean) {
         startForeground(
             NOTIFICATION_ID,
             buildNotification(text),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
+            (if (media) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0) or
+                (if (mic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0),
         )
     }
 

@@ -20,8 +20,8 @@ android {
         applicationId = "com.blueaudiosink.sender"
         minSdk = 29
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.2.0"
 
         resourceConfigurations += listOf("zh")
     }
@@ -38,6 +38,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+        }
         release {
             if (releaseSigningFile.isFile) signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false

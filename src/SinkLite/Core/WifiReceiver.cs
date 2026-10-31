@@ -63,6 +63,54 @@ namespace SinkLite.Core
         }
 
         private readonly object sync = new object();
+        private readonly MicrophoneState microphoneControls;
+        private DualStreamSession dual;
+        private readonly List<DualStreamSession> retiredDual = new List<DualStreamSession>();
+        private long lastMicStateTicks;
+        private uint lastMicRevision;
+        private readonly Queue<uint> obsoleteDualIds=new Queue<uint>();
+        private void RetireDualLocked() { if(dual!=null) { dual.CloseInput(); retiredDual.Add(dual); dual=null; } }
+        private void SendMicrophoneState(IPEndPoint target)
+        {
+            byte[] payload; uint revision;
+            lock(sync) {
+                if(dual==null || !SameEndpoint(sessionEndpoint,target)) return;
+                var state=microphoneControls.Current; revision=state.Revision;
+                payload=new byte[24];
+                uint[] values={dual.Id,state.Acknowledged,state.Muted?1U:0U,(uint)state.Volume,dual.HasVirtualOutput?3U:1U,state.Share?1U:0U};
+                for(int i=0;i<values.Length;i++) System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(i*4,4),values[i]);
+            }
+            SendControlPacket(WifiTransport.BuildPacket(11,0,revision,0,payload),target);
+        }
+        private void HandleDualControl(byte[] data,int length,WifiTransport.WifiHeader h,IPEndPoint from,long now)
+        {
+            lock(sync) {
+                if(!AcceptSourceLocked(from)) return;
+                if(h.Type==10) {
+                    if(length!=20 || h.Seq==0) return;
+                    uint flags=WifiTransport.ReadUInt32(data,16);
+                    if(flags==0 || flags>3) return;
+                    if(obsoleteDualIds.Contains(h.Seq)) return;
+                    if(dual==null || dual.Id!=h.Seq) {
+                        if(dual!=null) { obsoleteDualIds.Enqueue(dual.Id); while(obsoleteDualIds.Count>32) obsoleteDualIds.Dequeue(); }
+                        BeginSessionLocked(now,false,0);
+                        microphoneControls.BeginSession();
+                        dual=new DualStreamSession(h.Seq,(flags&1)!=0,(flags&2)!=0,microphoneControls,log);
+                    }
+                    sessionEndpoint=remote=from; lastAudioTicks=lastAnyTicks=now;
+                    state=SinkState.LinkReady; detail="正在准备双路音频";
+                } else {
+                    if(length!=32 || dual==null || WifiTransport.ReadUInt32(data,16)!=dual.Id || !SameEndpoint(sessionEndpoint,from)) return;
+                    uint muted=WifiTransport.ReadUInt32(data,24), volume=WifiTransport.ReadUInt32(data,28);
+                    if(muted>1 || volume>100 || h.Flags<1 || h.Flags>3) return;
+                    if(microphoneControls.ApplyRemote(h.Seq,WifiTransport.ReadUInt32(data,20),muted!=0,(int)volume,h.Flags)) {
+                        Settings.Update(saved=> { var s=microphoneControls.Current; saved.MicrophoneMuted=s.Muted; saved.MicrophoneVolume=s.Volume; });
+                    }
+                    lastAnyTicks=now;
+                }
+            }
+            SendMicrophoneState(from);
+        }
         private readonly Log log;
         private readonly int controlPort;
         private readonly int audioPort;
@@ -209,9 +257,10 @@ namespace SinkLite.Core
         private int rebufferPending;
         private int lastRebufferMs;
 
-        public WifiReceiver(Log log, int controlPort, int audioPort, int bufferBaseMs, int bufferMaxMs, string deviceName)
+        public WifiReceiver(Log log, int controlPort, int audioPort, int bufferBaseMs, int bufferMaxMs, string deviceName, MicrophoneState microphoneControls = null)
         {
             this.log = log;
+            this.microphoneControls = microphoneControls ?? new MicrophoneState();
             this.controlPort = controlPort;
             this.audioPort = audioPort;
             baseMs = Math.Clamp(bufferBaseMs, 10, 800);
@@ -343,6 +392,8 @@ namespace SinkLite.Core
                 pending.Dispose();
             }
 
+            lock(sync) { RetireDualLocked(); }
+            foreach(var old in retiredDual) old.Dispose(); retiredDual.Clear();
             controlSocket = null;
             audioSocket = null;
             controlThread = null;
@@ -457,6 +508,17 @@ namespace SinkLite.Core
 
         private void HandlePacket(byte[] data, int length, IPEndPoint from, long now, bool control)
         {
+            if(DualStreamTransport.TryRead(data,length,out var dh)) {
+                lock(sync) {
+                    if(dual==null || !SameEndpoint(sessionEndpoint,from) || dual.Id!=dh.Session) { foreign++; return; }
+                    if(!dual.Add(dh,data,now)) return; lastAudioTicks=lastAnyTicks=now;
+                    for(int i=DualStreamTransport.HeaderSize;i+1<length;i+=2) {
+                        short sample=(short)(data[i]|data[i+1]<<8); if(sample>32||sample< -32) { lastSignalTicks=now; break; }
+                    }
+                    state=SinkState.Flowing; detail=dual.OutputStatus;
+                }
+                return;
+            }
             if (length < WifiTransport.HeaderSize)
             {
                 AddMalformedLocked("short");
@@ -470,6 +532,14 @@ namespace SinkLite.Core
                 return;
             }
 
+            if(header.Type==10 || header.Type==12) { HandleDualControl(data,length,header,from,now); return; }
+            lock(sync) {
+                if(dual!=null && header.Type==WifiTransport.TypeStop) {
+                    if(header.Seq==dual.Id && SameEndpoint(sessionEndpoint,from)) GoArmedLocked("手机已停止发送");
+                    return;
+                }
+                if(dual!=null && (header.Type==WifiTransport.TypeAudio || header.Type==WifiTransport.TypeStart)) return;
+            }
             switch (header.Type)
             {
                 case WifiTransport.TypeAudio:
@@ -863,7 +933,8 @@ namespace SinkLite.Core
                     AudioOutput release = null;
                     lock (sync)
                     {
-                        needOpen = ProcessLocked(now);
+                        needOpen = dual==null ? ProcessLocked(now) : false;
+                        if(dual!=null && now-lastAudioTicks>TicksFromMs(5000)) GoArmedLocked("双路音频已断开");
                         release = pendingRelease;
                         pendingRelease = null;
                     }
@@ -880,6 +951,17 @@ namespace SinkLite.Core
                         OpenOutput();
                     }
 
+                    DualStreamSession active; DualStreamSession[] retired;
+                    lock(sync) { active=dual; retired=retiredDual.ToArray(); retiredDual.Clear(); }
+                    foreach(var old in retired) old.Dispose();
+                    active?.Tick(now);
+                    IPEndPoint micTarget=null;
+                    lock(sync) {
+                        if(dual!=null && (lastMicRevision!=microphoneControls.Current.Revision || now-lastMicStateTicks>TicksFromMs(500))) {
+                            lastMicRevision=microphoneControls.Current.Revision; lastMicStateTicks=now; micTarget=sessionEndpoint;
+                        }
+                    }
+                    if(micTarget!=null) SendMicrophoneState(micTarget);
                     Housekeeping(now);
                 }
                 catch (Exception ex)
@@ -1136,6 +1218,7 @@ namespace SinkLite.Core
 
         private void BeginSessionLocked(long now, bool fromStart, uint startUs)
         {
+            RetireDualLocked();
             ClearQueueLocked();
             // Stop the old consumer before a new session starts prebuffering.
             // Clearing an actively playing provider would manufacture startup underruns.
@@ -1201,6 +1284,7 @@ namespace SinkLite.Core
 
         private void GoArmedLocked(string text)
         {
+            RetireDualLocked();
             ClearQueueLocked();
             DetachOutputLocked();
             playing = false;
@@ -1461,6 +1545,11 @@ namespace SinkLite.Core
                 snapshot.Unknown = unknown;
                 snapshot.Dropped = dropped;
                 snapshot.Port = audioPort;
+                if(dual!=null) {
+                    snapshot.DualMode=true; snapshot.VirtualMicrophoneReady=dual.HasVirtualOutput;
+                    snapshot.MicrophoneStatus=dual.OutputStatus; snapshot.Received=dual.Received;
+                    snapshot.OutputActive=dual.HasHeadphones||dual.HasVirtualOutput; snapshot.Detail=dual.OutputStatus;
+                }
                 return snapshot;
             }
         }

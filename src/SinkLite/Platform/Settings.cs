@@ -10,9 +10,16 @@ namespace SinkLite.Platform
     /// </summary>
     internal sealed class Settings
     {
+        private static readonly object updateSync = new object();
+        public static void Update(Action<Settings> apply) { lock(updateSync) { var settings=Load(); apply(settings); settings.Save(); } }
+
         public string DeviceId { get; set; } = string.Empty;
 
         public bool AutoConnect { get; set; } = true;
+        public string VirtualRenderId { get; set; } = string.Empty;
+        public bool MicrophoneMuted { get; set; }
+        public int MicrophoneVolume { get; set; } = 100;
+        public bool SharePhoneMedia { get; set; }
 
         public int SampleSeconds { get; set; } = 2;
 
@@ -42,7 +49,8 @@ namespace SinkLite.Platform
             }
         }
 
-        public static Settings Load()
+        public static Settings Load() { lock(updateSync) return LoadCore(); }
+        private static Settings LoadCore()
         {
             Settings settings = new Settings();
             try
@@ -71,6 +79,10 @@ namespace SinkLite.Platform
                     string value = line.Substring(eq + 1).Trim();
                     switch (key)
                     {
+                        case "virtualrenderid": settings.VirtualRenderId = value; break;
+                        case "microphonemuted": settings.MicrophoneMuted = value == "1"; break;
+                        case "microphonevolume": if (int.TryParse(value, out int volume)) settings.MicrophoneVolume = Math.Clamp(volume,0,100); break;
+                        case "sharephonemedia": settings.SharePhoneMedia = value == "1"; break;
                         case "deviceid":
                             settings.DeviceId = value;
                             break;
@@ -135,7 +147,8 @@ namespace SinkLite.Platform
             return settings;
         }
 
-        public void Save()
+        public void Save() { lock(updateSync) SaveCore(); }
+        private void SaveCore()
         {
             try
             {
@@ -144,6 +157,10 @@ namespace SinkLite.Platform
 
                 StringBuilder sb = new StringBuilder();
                 sb.AppendLine("# BlueAudioSink 设置");
+                sb.AppendLine("virtualrenderid=" + (VirtualRenderId ?? ""));
+                sb.AppendLine("microphonemuted=" + (MicrophoneMuted ? "1" : "0"));
+                sb.AppendLine("microphonevolume=" + MicrophoneVolume);
+                sb.AppendLine("sharephonemedia=" + (SharePhoneMedia ? "1" : "0"));
                 sb.AppendLine("deviceid=" + (DeviceId ?? string.Empty));
                 sb.AppendLine("autoconnect=" + (AutoConnect ? "1" : "0"));
                 sb.AppendLine("sampleseconds=" + SampleSeconds);

@@ -121,6 +121,41 @@ fun SenderScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 StatusCard(state)
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("音频来源", style = MaterialTheme.typography.titleMedium)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            androidx.compose.material3.Switch(checked = state.mediaEnabled,
+                                enabled = state.phase != LinkPhase.STREAMING,
+                                onCheckedChange = { com.blueaudiosink.sender.core.LinkController.setSources(it, state.microphoneEnabled) })
+                            Text("手机媒体声音 → 电脑耳机")
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            androidx.compose.material3.Switch(checked = state.microphoneEnabled,
+                                enabled = state.phase != LinkPhase.STREAMING,
+                                onCheckedChange = { com.blueaudiosink.sender.core.LinkController.setSources(state.mediaEnabled, it) })
+                            Text("手机麦克风 → 电脑虚拟麦克风")
+                        }
+                        if (state.microphoneEnabled) {
+                            val active = state.phase == LinkPhase.STREAMING
+                            Text(if (!active) "开始发送后可同步调整麦克风" else if (!state.microphoneSynced) "正在同步麦克风状态…"
+                                else if (!state.virtualMicrophoneReady) "电脑未找到虚拟麦克风，请安装或选择 VB-CABLE" else "麦克风状态已同步")
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                androidx.compose.material3.Switch(checked = state.microphoneMuted,
+                                    enabled = active && state.microphoneSynced,
+                                    onCheckedChange = { com.blueaudiosink.sender.core.LinkController.setMicrophone(it, state.microphoneVolume, 1) })
+                                Text("麦克风静音")
+                            }
+                            var volumeDraft by remember(state.microphoneVolume) { mutableStateOf(state.microphoneVolume.toFloat()) }
+                            Text("麦克风音量：${volumeDraft.toInt()}%")
+                            androidx.compose.material3.Slider(value = volumeDraft, valueRange = 0f..100f,
+                                enabled = active && state.microphoneSynced,
+                                onValueChange = { volumeDraft = it },
+                                onValueChangeFinished = { com.blueaudiosink.sender.core.LinkController.setMicrophone(state.microphoneMuted, volumeDraft.toInt(), 2) })
+                            Text(if (state.shareMedia) "电脑已开启分享手机媒体声" else "电脑未开启分享手机媒体声")
+                        }
+                    }
+                }
                 DeviceSection(
                     state = state,
                     manualIp = manualIp,

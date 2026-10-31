@@ -548,7 +548,10 @@ namespace SinkLite.Core
 
                 if (hasSessionStart)
                 {
-                    int diff = unchecked((int)(header.TimestampUs - sessionStartUs));
+                    // Compare against a recent accepted packet after startup. A fixed
+                    // START baseline becomes negative after 2^31 microseconds (~36 min).
+                    uint baseline = firstAudio ? lastTimestampUs : sessionStartUs;
+                    int diff = unchecked((int)(header.TimestampUs - baseline));
                     if (diff < -100000)
                     {
                         stale++;
@@ -973,7 +976,13 @@ namespace SinkLite.Core
             if (draining) output.EndInput();
             if (!playing && (output.BufferedMs >= targetMs || (draining && output.BufferedMs > 0)))
             {
-                output.Play();
+                if (!output.Play())
+                {
+                    state = SinkState.Faulted;
+                    detail = "音频输出启动失败，请检查播放设备后重新连接";
+                    DetachOutputLocked();
+                    return false;
+                }
                 playing = true;
                 log.Info("Wifi.Playing", ("bufferMs", DepthLocked()));
             }

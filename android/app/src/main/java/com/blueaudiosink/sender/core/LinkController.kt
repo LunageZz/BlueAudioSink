@@ -114,6 +114,10 @@ object LinkController : UdpSender.Listener {
 
     /** 选择/输入目标电脑。HELLO 让 PC 先认识我们的源地址，从而开始发 PING。 */
     fun connect(ip: String, port: Int = PacketCodec.DEFAULT_AUDIO_PORT): Boolean {
+        if (streaming) {
+            postMessage("请先停止发送，再切换电脑")
+            return false
+        }
         val host = ip.trim()
         if (host.isEmpty()) {
             postMessage("请输入电脑 IP")
@@ -243,8 +247,10 @@ object LinkController : UdpSender.Listener {
     override fun onOffer(device: DiscoveredDevice) {
         discovery?.offer(device)
         if (device.ip == _state.value.targetIp) {
-            sender?.setTarget(device.ip, device.port)
-            _state.update { it.copy(targetName = device.name, targetPort = device.port) }
+            // Keep the active stream's destination fixed until the user stops it.
+            if (!streaming) sender?.setTarget(device.ip, device.port)
+            _state.update { it.copy(targetName = device.name,
+                targetPort = if (streaming) it.targetPort else device.port) }
             // 已保存的设备拿到真实名称后同步更新（名称比 IP 更好认）；
             // 只在它确实还在记忆列表里时更新，避免刚删掉的设备被一次广播写回来。
             if (_state.value.savedDevices.any { it.ip == device.ip }) {
@@ -253,7 +259,9 @@ object LinkController : UdpSender.Listener {
         }
     }
 
-    override fun onPing(t1Us: Int, receivedAtUs: Int) {
+    override fun onPing(targetHost: String, targetPort: Int, t1Us: Int, receivedAtUs: Int) {
+        val target = _state.value
+        if (target.targetIp != targetHost || target.targetPort != targetPort) return
         val now = SystemClock.elapsedRealtime()
         if (lastPingAtMs > 0) {
             val gap = now - lastPingAtMs
@@ -271,6 +279,7 @@ object LinkController : UdpSender.Listener {
             rememberTarget(current.targetIp.orEmpty(), current.targetPort, current.targetName)
         }
         _state.update {
+            if (it.targetIp != targetHost || it.targetPort != targetPort) return@update it
             it.copy(
                 phase = when {
                     streaming -> LinkPhase.STREAMING

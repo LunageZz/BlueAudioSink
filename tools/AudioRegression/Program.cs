@@ -65,7 +65,9 @@ class Program
             var o = new AudioOutput(log); var x = Signal(80); o.Add(x, 0, x.Length);
             Set(r, "output", o); Set(r, "playing", true); Set(r, "state", SinkState.Flowing);
             Call(r, "AdaptLocked", 0L);
-            var b = (PlayoutBuffer)Get(o, "buffer"); byte[] y = new byte[x.Length]; b.Read(y, 0, y.Length);
+            // This is a PCM-only test, not a Windows render-thread scheduling test.
+            var b = (PlayoutBuffer)Get(o, "buffer"); b.UseMmcss = false;
+            byte[] y = new byte[x.Length]; b.Read(y, 0, y.Length);
             Assert(x.SequenceEqual(y) && r.GetSnapshot().TargetMs == 80, "Adaptation changed audio");
         });
         Test("Empty staging queue does not starve a healthy output buffer", () => {
@@ -90,6 +92,51 @@ class Program
             byte[] data = WifiTransport.BuildPacket(WifiTransport.TypeAudio, 0, seq, seq * 5000, Signal(5));
             Call(r, "HandlePacket", data, data.Length, new IPEndPoint(IPAddress.Loopback, 45678), now, false);
         }
+        Test("Long sessions cross signed timestamp boundary and full wrap without stale loss", () => {
+            using var r = new WifiReceiver(log, 0, 0, 80, 200, "test");
+            var from = new IPEndPoint(IPAddress.Loopback, 45678);
+            const uint start = 123456;
+            var begin = WifiTransport.BuildPacket(WifiTransport.TypeStart, 0, 0, start, null);
+            Call(r, "HandlePacket", begin, begin.Length, from, Ticks(1), false);
+            uint seq = 0;
+            // Advance one simulated second at a time; no wall-clock wait or real output.
+            // Clear only staged PCM so the test remains bounded over 75 simulated minutes.
+            for (long second = 0; second <= 4500; second++) {
+                uint ts = unchecked(start + (uint)(second * 1000000));
+                var audio = WifiTransport.BuildPacket(WifiTransport.TypeAudio, 0, seq++, ts, Signal(5));
+                Call(r, "HandlePacket", audio, audio.Length, from, Ticks(1) + second * Ticks(1000), false);
+                Call(r, "FlushReorderLocked", Ticks(1) + second * Ticks(1000));
+                Call(r, "ClearQueueLocked");
+            }
+            Assert(r.GetSnapshot().Received == 4501 && r.GetSnapshot().Stale == 0, "Long stream rejected after timestamp boundary");
+        });
+        Test("Stale startup audio is rejected even when START crosses uint wrap", () => {
+            using var r = new WifiReceiver(log, 0, 0, 80, 200, "test");
+            var from = new IPEndPoint(IPAddress.Loopback, 45678);
+            const uint start = uint.MaxValue - 2000;
+            var begin = WifiTransport.BuildPacket(WifiTransport.TypeStart, 0, 0, start, null);
+            Call(r, "HandlePacket", begin, begin.Length, from, Ticks(1), false);
+            var old = WifiTransport.BuildPacket(WifiTransport.TypeAudio, 0, 0, start - 200000, Signal(5));
+            Call(r, "HandlePacket", old, old.Length, from, Ticks(2), false);
+            var fresh = WifiTransport.BuildPacket(WifiTransport.TypeAudio, 0, 0, unchecked(start + 5000), Signal(5));
+            Call(r, "HandlePacket", fresh, fresh.Length, from, Ticks(3), false);
+            Assert(r.GetSnapshot().Stale == 1 && r.GetSnapshot().Received == 1, "Startup stale guard or wrap handling lost");
+        });
+        Test("Player startup exceptions fault the receiver and detach the failed output", () => {
+            using var r = new WifiReceiver(log, 0, 0, 80, 200, "test");
+            var o = new AudioOutput(log);
+            var player = new FailingPlayer();
+            Set(o, "output", player);
+            o.Add(Signal(80), 0, 80 * 192);
+            Set(r, "output", o); Set(r, "state", SinkState.LinkReady);
+            Call(r, "ProcessLocked", Ticks(1));
+            Assert(player.PlayCalls == 1 && !(bool)Get(r, "playing"), "Failed player marked playing");
+            Assert(r.GetSnapshot().State == SinkState.Faulted && Get(r, "output") == null
+                && ReferenceEquals(Get(r, "pendingRelease"), o), "Failed output retained or fault hidden");
+            Call(r, "ProcessLocked", Ticks(2));
+            Assert(player.PlayCalls == 1, "Faulted player unexpectedly retried");
+            o.Dispose();
+        });
         Test("0,2,1 is reordered without concealment", () => {
             using var r = new WifiReceiver(log, 45678, 45679, 80, 200, "test");
             Packet(r, 0, Ticks(1)); Call(r, "FlushReorderLocked", Ticks(1));
@@ -223,6 +270,19 @@ class Program
             Wait(() => r.GetSnapshot().Remote == bId && r.GetSnapshot().Received == 1 && r.GetSnapshot().BufferMs == 5, "B audio not independently buffered");
         });
         Console.WriteLine($"{passed} tests passed");
+    }
+    sealed class FailingPlayer : IWavePlayer
+    {
+        public int PlayCalls;
+        public PlaybackState PlaybackState => PlaybackState.Stopped;
+        public WaveFormat OutputWaveFormat => new WaveFormat(48000, 16, 2);
+        public float Volume { get; set; }
+        public event EventHandler<StoppedEventArgs> PlaybackStopped { add { } remove { } }
+        public void Init(IWaveProvider provider) { }
+        public void Play() { PlayCalls++; throw new InvalidOperationException("Simulated device startup failure"); }
+        public void Pause() { }
+        public void Stop() { }
+        public void Dispose() { }
     }
     static void Record(int seconds, string path)
     {

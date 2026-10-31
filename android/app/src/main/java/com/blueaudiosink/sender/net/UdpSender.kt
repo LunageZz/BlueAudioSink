@@ -27,7 +27,7 @@ class UdpSender(context: Context) {
 
     interface Listener {
         fun onOffer(device: DiscoveredDevice)
-        fun onPing(t1Us: Int, receivedAtUs: Int)
+        fun onPing(targetHost: String, targetPort: Int, t1Us: Int, receivedAtUs: Int)
         fun onError(message: String)
     }
 
@@ -121,16 +121,16 @@ class UdpSender(context: Context) {
     }
 
     /** 设定目标电脑（来自发现列表或手动输入）。不做 DNS，解析推迟到发送线程。 */
-    fun setTarget(host: String, port: Int): Boolean {
+    fun setTarget(host: String, port: Int): Boolean = synchronized(sendLock) {
         val trimmed = host.trim()
-        if (trimmed.isEmpty()) return false
+        if (trimmed.isEmpty()) return@synchronized false
         targetHost = trimmed
         targetPort = if (port in 1..65_535) port else PacketCodec.DEFAULT_AUDIO_PORT
         cachedAddress = null
-        return true
+        true
     }
 
-    fun clearTarget() {
+    fun clearTarget() = synchronized(sendLock) {
         targetHost = null
         targetPort = PacketCodec.DEFAULT_AUDIO_PORT
         cachedAddress = null
@@ -247,6 +247,14 @@ class UdpSender(context: Context) {
 
     /** PC 发起的探测：payload 空，header.timestampUs = T1（PC 发送时刻）。 */
     private fun handlePing(packet: DatagramPacket, buffer: ByteArray) {
+        // PING is sent from the PC control port, not its audio destination port.
+        // Snapshot the validated destination; the controller also checks the
+        // snapshot in case the user switches targets before the callback runs.
+        val target = synchronized(sendLock) {
+            val host = targetHost ?: return
+            if (packet.port != PacketCodec.CONTROL_PORT || packet.address != resolveTarget()) return
+            Pair(host, targetPort)
+        }
         val t1 = PacketCodec.timestampOf(buffer, packet.length)
         val receiveUs = (SystemClock.elapsedRealtimeNanos() / 1000L).toInt()
         val pong = PacketCodec.build(
@@ -262,7 +270,7 @@ class UdpSender(context: Context) {
             Log.w(TAG, "send PONG failed", e)
             listener?.onError("回送 PONG 失败：" + (e.message ?: e.javaClass.simpleName))
         }
-        listener?.onPing(t1, receiveUs)
+        listener?.onPing(target.first, target.second, t1, receiveUs)
     }
 
     private fun intToBytes(value: Int): ByteArray {
